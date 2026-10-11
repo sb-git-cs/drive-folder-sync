@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 
@@ -128,6 +129,56 @@ namespace DriveFolderSync
                 int made = SyncEngine.MirrorDirectories(cloudDir, localDir);
                 if (!Directory.Exists(Path.Combine(localDir, "project", "notes"))) throw new Exception("local replica did not keep the cloud folders");
                 if (made < 1) throw new Exception("mirror did not create folders");
+
+                string selCloud = Path.Combine(root, "sel-cloud");
+                string selLocal = Path.Combine(root, "sel-local");
+                Directory.CreateDirectory(Path.Combine(selCloud, "a"));
+                Directory.CreateDirectory(Path.Combine(selCloud, "b"));
+                File.WriteAllText(Path.Combine(selCloud, "a", "one.txt"), "one");
+                File.WriteAllText(Path.Combine(selCloud, "a", "two.txt"), "two");
+                File.WriteAllText(Path.Combine(selCloud, "b", "skip.txt"), "skip");
+                List<string> selDirs = new List<string>();
+                selDirs.Add("b");
+                List<string> selFiles = new List<string>();
+                selFiles.Add(@"a\one.txt");
+                SyncEngine.MaterializeSelection(selCloud, selLocal, selDirs, selFiles);
+                if (File.ReadAllText(Path.Combine(selLocal, "a", "one.txt")) != "one") throw new Exception("selected file was not copied");
+                if (File.Exists(Path.Combine(selLocal, "a", "two.txt"))) throw new Exception("unselected file in the same folder was copied");
+                if (!Directory.Exists(Path.Combine(selLocal, "b"))) throw new Exception("selected folder was not created");
+                if (File.Exists(Path.Combine(selLocal, "b", "skip.txt"))) throw new Exception("files inside a selected folder were copied");
+
+                string pullLocal = Path.Combine(root, "pull-local");
+                string pullRemote = Path.Combine(root, "pull-remote");
+                Directory.CreateDirectory(pullRemote);
+                File.WriteAllText(Path.Combine(pullRemote, "keep.txt"), "keep");
+                File.WriteAllText(Path.Combine(pullRemote, "other.txt"), "other");
+                string pullState = Path.Combine(root, "pull-state.json");
+                List<string> allow = new List<string>();
+                allow.Add("keep.txt");
+                SyncStats limited = SyncEngine.SyncFolder("Pull", pullLocal, pullRemote, pullState, true, allow);
+                if (limited.Down != 1) throw new Exception("allow list downloaded " + limited.Down + " files");
+                if (File.ReadAllText(Path.Combine(pullLocal, "keep.txt")) != "keep") throw new Exception("allowed file was not downloaded");
+                if (File.Exists(Path.Combine(pullLocal, "other.txt"))) throw new Exception("file outside the allow list was downloaded");
+                File.WriteAllText(Path.Combine(pullLocal, "extra.txt"), "extra");
+                SyncEngine.SyncFolder("Push", pullLocal, pullRemote, pullState, true, allow);
+                if (File.Exists(Path.Combine(pullRemote, "extra.txt"))) throw new Exception("file outside the allow list was uploaded");
+                List<string> none = new List<string>();
+                string emptyLocal = Path.Combine(root, "empty-local");
+                SyncStats emptyPull = SyncEngine.SyncFolder("Pull", emptyLocal, pullRemote, Path.Combine(root, "empty-state.json"), true, none);
+                if (emptyPull.Down != 0) throw new Exception("empty allow list downloaded files");
+                if (File.Exists(Path.Combine(emptyLocal, "keep.txt")) || File.Exists(Path.Combine(emptyLocal, "other.txt")))
+                    throw new Exception("empty allow list created files");
+
+                LinkFolder remembered = SyncEngine.RememberSelection("missing-provider", selLocal, selDirs, selFiles);
+                if (remembered == null || !remembered.Partial) throw new Exception("selection was not stored as a partial replica");
+                if (remembered.Files.Count != 1 || remembered.Dirs.Count != 1) throw new Exception("selection did not keep the chosen file and folder");
+                SyncEngine.RememberSelection("missing-provider", selLocal, selDirs, selFiles);
+                int partials = 0;
+                foreach (LinkFolder link in Store.ReadLinks())
+                {
+                    if (link.Partial) partials++;
+                }
+                if (partials != 1) throw new Exception("selecting the same items created another replica link");
 
                 File.WriteAllText(resultPath, "self-test passed");
                 return 0;

@@ -14,7 +14,7 @@ Google Drive, OneDrive, and Dropbox folders that are already on the PC show up i
 
 ## Local replica
 
-Open a drive and choose **Local replica**. The copy is created under your `Work Drive` folder with the same folders as the cloud drive. Browsing either side shows one list: folders that exist only in the cloud, only on this PC, or in both places.
+Select folders and files on a drive, then choose **Local replica**. Only those folders are created, and only those files are copied. A selected file keeps the same folder path as on the drive. Other folders and files stay in the cloud. The copy is under your `Work Drive` folder. Browsing either side shows one list: items that exist only in the cloud, only on this PC, or in both places.
 
 ## Link a folder
 

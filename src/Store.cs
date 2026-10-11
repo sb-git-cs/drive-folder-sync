@@ -41,6 +41,9 @@ namespace DriveFolderSync
         public string Added;
         public string LastSync;
         public int LastErrors;
+        public bool Partial;
+        public List<string> Files;
+        public List<string> Dirs;
     }
 
     public class FileRecord
@@ -72,7 +75,7 @@ namespace DriveFolderSync
 
     public class Store
     {
-        public const string Version = "1.1.0";
+        public const string Version = "1.1.1";
         static readonly object LogGate = new object();
         static string rootOverride;
         static string logOverride;
@@ -501,6 +504,9 @@ namespace DriveFolderSync
                 folder.Added = GetString(item, "added");
                 folder.LastSync = GetString(item, "lastSync");
                 folder.LastErrors = GetInt(item, "lastErrors");
+                folder.Partial = GetBool(item, "partial");
+                folder.Files = GetStringList(item, "files");
+                folder.Dirs = GetStringList(item, "dirs");
                 if (string.IsNullOrEmpty(folder.Id) || string.IsNullOrEmpty(folder.Local)) continue;
                 list.Add(folder);
             }
@@ -521,6 +527,9 @@ namespace DriveFolderSync
                 item["added"] = folder.Added ?? "";
                 item["lastSync"] = folder.LastSync ?? "";
                 item["lastErrors"] = folder.LastErrors;
+                item["partial"] = folder.Partial;
+                item["files"] = folder.Files ?? new List<string>();
+                item["dirs"] = folder.Dirs ?? new List<string>();
                 folders.Add(item);
             }
             Dictionary<string, object> root = new Dictionary<string, object>();

@@ -202,6 +202,7 @@ namespace DriveFolderSync
             tree.AfterSelect += new TreeViewEventHandler(Tree_AfterSelect);
             list.Dock = DockStyle.Fill;
             list.View = View.Details;
+            list.MultiSelect = true;
             list.FullRowSelect = true;
             list.HideSelection = false;
             list.Columns.Add("Name", 280);
@@ -270,7 +271,7 @@ namespace DriveFolderSync
                 replicaTag.Key = replica;
                 replicaTag.FullPath = replica;
                 TreeNode replicaNode = MakeDirNode("Local replica  ·  " + Store.ReplicaLeaf(provider), replicaTag);
-                replicaNode.ToolTipText = replica + "\r\nSame folders as " + provider.Root;
+                replicaNode.ToolTipText = replica + "\r\nSelected folders and files from " + provider.Root;
                 pc.Nodes.Add(replicaNode);
             }
             NodeTag linkedTag = new NodeTag();
@@ -466,7 +467,7 @@ namespace DriveFolderSync
                     built.Add(row);
                     Row replica = new Row();
                     replica.Name = "Local replica  ·  " + Store.ReplicaLeaf(provider);
-                    replica.Status = Directory.Exists(Store.ReplicaRoot(provider)) ? "Same folders as the drive" : "Not created yet";
+                    replica.Status = Directory.Exists(Store.ReplicaRoot(provider)) ? "Selected folders and files" : "Not created yet";
                     replica.Kind = "none";
                     replica.FullPath = Store.ReplicaRoot(provider);
                     replica.NavigateKey = Store.ReplicaRoot(provider);
@@ -480,7 +481,7 @@ namespace DriveFolderSync
                 linked.IsDir = true;
                 linked.NavigateKey = "vfs:linked";
                 built.Add(linked);
-                syncLine = "Open a drive folder and choose Local replica to keep the same folders on this PC";
+                syncLine = "Select folders or files, then choose Local replica. Only the selection is copied, and paths match the drive.";
                 return built;
             }
             if (key == "vfs:linked")
@@ -825,82 +826,117 @@ namespace DriveFolderSync
             }
         }
 
+        sealed class ReplicaChoice
+        {
+            public Provider Provider;
+            public bool RootSelected;
+            public List<string> Dirs = new List<string>();
+            public List<string> Files = new List<string>();
+        }
+
         void Replica_Click(object sender, EventArgs e)
         {
-            List<Provider> providers = Store.DetectProviders();
-            List<string> clouds = new List<string>();
-            bool whole = false;
-            if (list.SelectedItems.Count > 0)
+            if (list.SelectedItems.Count == 0)
             {
-                foreach (ListViewItem item in list.SelectedItems)
-                {
-                    Row row = item.Tag as Row;
-                    if (row == null || !row.IsDir) continue;
-                    string path = string.IsNullOrEmpty(row.FullPath) ? row.NavigateKey : row.FullPath;
-                    AddReplicaTarget(providers, clouds, path, ref whole);
-                }
+                MessageBox.Show(this, "Select the folders and files to keep locally. The open folder is not copied on its own.", "Drive Folder Sync");
+                return;
             }
-            if (clouds.Count == 0) AddReplicaTarget(providers, clouds, current, ref whole);
-            if (clouds.Count == 0)
+            List<Provider> providers = Store.DetectProviders();
+            Dictionary<string, ReplicaChoice> choices = new Dictionary<string, ReplicaChoice>(StringComparer.OrdinalIgnoreCase);
+            foreach (ListViewItem item in list.SelectedItems)
             {
-                MessageBox.Show(this, "Open a folder on a drive, or select folders in the list, then create a local replica.", "Drive Folder Sync");
+                Row row = item.Tag as Row;
+                if (row == null) continue;
+                string path = row.FullPath;
+                if (string.IsNullOrEmpty(path)) path = row.NavigateKey;
+                if (string.IsNullOrEmpty(path) || path.StartsWith("vfs:", StringComparison.OrdinalIgnoreCase)) continue;
+                Store.Place place = Store.FindPlace(path, providers);
+                if (place == null || place.Provider == null || string.IsNullOrEmpty(place.Provider.Root)) continue;
+                ReplicaChoice choice;
+                if (!choices.TryGetValue(place.Provider.Id, out choice))
+                {
+                    choice = new ReplicaChoice();
+                    choice.Provider = place.Provider;
+                    choices[place.Provider.Id] = choice;
+                }
+                if (string.IsNullOrEmpty(place.Relative))
+                {
+                    if (row.IsDir) choice.RootSelected = true;
+                    continue;
+                }
+                if (row.IsDir) AddChoice(choice.Dirs, place.Relative);
+                else AddChoice(choice.Files, place.Relative);
+            }
+            if (choices.Count == 0)
+            {
+                MessageBox.Show(this, "Select folders and files on a drive first.", "Drive Folder Sync");
                 return;
             }
             StringBuilder message = new StringBuilder();
-            message.AppendLine("Create a local replica with the same folders as the cloud?");
+            message.AppendLine("Create a local replica of the selection?");
+            message.AppendLine();
+            message.AppendLine("Only the selected folders will be created. Only the selected files will be copied. Folder paths match the drive.");
             message.AppendLine();
             int shown = 0;
-            foreach (string cloud in clouds)
+            int hidden = 0;
+            foreach (ReplicaChoice choice in choices.Values)
             {
-                if (shown >= 8) break;
-                Store.Place place = Store.FindPlace(cloud, providers);
-                message.AppendLine(cloud);
-                message.AppendLine("  ->  " + (place == null ? "" : place.ReplicaPath));
-                shown++;
+                message.AppendLine(Store.ReplicaRoot(choice.Provider));
+                if (choice.RootSelected) message.AppendLine("  folder  (this folder only)");
+                foreach (string dir in choice.Dirs)
+                {
+                    if (shown >= 12) { hidden++; continue; }
+                    message.AppendLine("  folder  " + dir);
+                    shown++;
+                }
+                foreach (string file in choice.Files)
+                {
+                    if (shown >= 12) { hidden++; continue; }
+                    message.AppendLine("  file    " + file);
+                    shown++;
+                }
             }
-            if (clouds.Count > shown) message.AppendLine("and " + (clouds.Count - shown) + " more");
-            message.AppendLine();
-            if (whole) message.AppendLine("This includes the whole drive and can be very large.");
-            message.AppendLine("Subfolders stay in the same places. Files download into the local replica.");
+            if (hidden > 0) message.AppendLine("and " + hidden + " more");
             if (MessageBox.Show(this, message.ToString(), "Drive Folder Sync", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK)
                 return;
             if (busy) return;
             busy = true;
             UseWaitCursor = true;
             statusText.Text = "Creating the local replica...";
-            List<string> chosen = new List<string>(clouds);
+            List<ReplicaChoice> chosen = new List<ReplicaChoice>(choices.Values);
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string error = null;
                 string openPath = null;
+                int copied = 0;
+                int made = 0;
                 try
                 {
-                    List<string> ids = new List<string>();
-                    foreach (string cloud in chosen)
+                    foreach (ReplicaChoice choice in chosen)
                     {
-                        Store.Place place = Store.FindPlace(cloud, Store.DetectProviders());
-                        if (place == null || !Directory.Exists(place.CloudPath)) continue;
-                        Directory.CreateDirectory(place.ReplicaPath);
-                        SyncEngine.MirrorDirectories(place.CloudPath, place.ReplicaPath);
-                        LinkFolder folder = SyncEngine.Link(place.ReplicaPath, place.Provider.Id, place.Relative);
-                        ids.Add(folder.Id);
-                        if (openPath == null) openPath = place.ReplicaPath;
-                    }
-                    foreach (string id in ids)
-                    {
-                        using (SyncEngine.LockState(180))
+                        string localRoot = Store.ReplicaRoot(choice.Provider);
+                        string cloudRoot = choice.Provider.Root;
+                        if (string.IsNullOrEmpty(cloudRoot) || !Directory.Exists(cloudRoot))
+                            throw new IOException("The drive is not available.");
+                        foreach (LinkFolder link in Store.ReadLinks())
                         {
-                            List<LinkFolder> links = Store.ReadLinks();
-                            foreach (LinkFolder folder in links)
-                            {
-                                if (string.Equals(folder.Id, id, StringComparison.OrdinalIgnoreCase))
-                                    SyncEngine.SyncLink(folder, "Pull", false);
-                            }
-                            Store.SaveLinks(links);
+                            if (link.Partial) continue;
+                            if (string.Equals(Store.Norm(link.Local), Store.Norm(localRoot), StringComparison.OrdinalIgnoreCase))
+                                throw new InvalidOperationException("This replica is already linked as a whole folder. Stop syncing it before choosing individual files.");
                         }
+                        SyncEngine.MaterializeSelection(cloudRoot, localRoot, choice.Dirs, choice.Files);
+                        LinkFolder saved = SyncEngine.RememberSelection(choice.Provider.Id, localRoot, choice.Dirs, choice.Files);
+                        if (saved == null || !saved.Partial)
+                            throw new InvalidOperationException("This replica is already linked as a whole folder. Stop syncing it before choosing individual files.");
+                        copied += choice.Files.Count;
+                        made += choice.Dirs.Count;
+                        if (choice.RootSelected) made++;
+                        if (openPath == null) openPath = localRoot;
                     }
                 }
                 catch (Exception ex) { error = ex.Message; }
+                int copiedFiles = copied;
+                int madeFolders = made;
                 BeginInvoke(new Action(delegate
                 {
                     busy = false;
@@ -909,26 +945,19 @@ namespace DriveFolderSync
                     if (!string.IsNullOrEmpty(openPath)) Navigate(openPath, true);
                     else LoadCurrent();
                     if (error != null) MessageBox.Show(this, error, "Drive Folder Sync", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    else statusText.Text = "Local replica is ready. Green is this PC, red is the cloud.";
+                    else statusText.Text = "Copied " + copiedFiles + " selected file(s) and created " + madeFolders + " selected folder(s). Other folders and files were left out.";
                 }));
             });
         }
 
-        static void AddReplicaTarget(List<Provider> providers, List<string> clouds, string path, ref bool whole)
+        static void AddChoice(List<string> target, string relative)
         {
-            if (string.IsNullOrEmpty(path) || path.StartsWith("vfs:", StringComparison.OrdinalIgnoreCase)) return;
-            Store.Place place = Store.FindPlace(path, providers);
-            if (place == null || string.IsNullOrEmpty(place.CloudPath)) return;
-            foreach (string existing in clouds)
+            if (string.IsNullOrEmpty(relative)) return;
+            foreach (string existing in target)
             {
-                if (Store.IsUnder(place.CloudPath, existing)) return;
+                if (string.Equals(existing, relative, StringComparison.OrdinalIgnoreCase)) return;
             }
-            for (int i = clouds.Count - 1; i >= 0; i--)
-            {
-                if (Store.IsUnder(clouds[i], place.CloudPath)) clouds.RemoveAt(i);
-            }
-            clouds.Add(place.CloudPath);
-            if (string.IsNullOrEmpty(place.Relative)) whole = true;
+            target.Add(relative);
         }
 
         void Link_Click(object sender, EventArgs e)
@@ -1064,7 +1093,7 @@ namespace DriveFolderSync
         void About_Click(object sender, EventArgs e)
         {
             MessageBox.Show(this,
-                "Drive Folder Sync " + Store.Version + "\r\n\r\nLocal replica keeps the same folders as the cloud drive.\r\nGreen files changed on this PC since the last sync.\r\nRed files changed in the cloud, or both sides changed.\r\n\r\nLinked folders refresh when you sign in and upload when Windows shuts down.",
+                "Drive Folder Sync " + Store.Version + "\r\n\r\nLocal replica copies only the folders and files you select. Selected files keep the same folder path as the drive.\r\nGreen files changed on this PC since the last sync.\r\nRed files changed in the cloud, or both sides changed.\r\n\r\nLinked folders refresh when you sign in and upload when Windows shuts down.",
                 "Drive Folder Sync");
         }
 

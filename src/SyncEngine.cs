@@ -236,7 +236,36 @@ namespace DriveFolderSync
             return made;
         }
 
+        public static void MaterializeSelection(string cloudRoot, string localRoot, IList<string> dirs, IList<string> files)
+        {
+            if (string.IsNullOrEmpty(localRoot)) return;
+            Directory.CreateDirectory(localRoot);
+            if (dirs != null)
+            {
+                foreach (string dir in dirs)
+                {
+                    string path = string.IsNullOrEmpty(dir) ? localRoot : Path.Combine(localRoot, dir);
+                    Directory.CreateDirectory(path);
+                }
+            }
+            if (files == null) return;
+            foreach (string rel in files)
+            {
+                if (string.IsNullOrEmpty(rel) || string.IsNullOrEmpty(cloudRoot)) continue;
+                string source = Path.Combine(cloudRoot, rel);
+                string dest = Path.Combine(localRoot, rel);
+                string parent = Path.GetDirectoryName(dest);
+                if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
+                if (File.Exists(source) && !File.Exists(dest)) CopyFile(source, dest);
+            }
+        }
+
         public static SyncStats SyncFolder(string direction, string local, string remote, string statePath, bool cloudReadbackIsTruth)
+        {
+            return SyncFolder(direction, local, remote, statePath, cloudReadbackIsTruth, null);
+        }
+
+        public static SyncStats SyncFolder(string direction, string local, string remote, string statePath, bool cloudReadbackIsTruth, List<string> onlyFiles)
         {
             SyncStats stats = new SyncStats();
             if (direction == "Pull" && (string.IsNullOrEmpty(remote) || !Directory.Exists(remote)))
@@ -252,11 +281,31 @@ namespace DriveFolderSync
                 return stats;
             }
             if (!Directory.Exists(local)) Directory.CreateDirectory(local);
-            if (!Directory.Exists(remote)) Directory.CreateDirectory(remote);
+            if (onlyFiles == null)
+            {
+                if (!Directory.Exists(remote)) Directory.CreateDirectory(remote);
+            }
+            else if (!Directory.Exists(remote))
+            {
+                Store.Log("skip, cloud folder missing: " + remote);
+                stats.Errors++;
+                return stats;
+            }
 
-            Dictionary<string, FileRecord> localFiles = Index(ListFiles(local));
-            Dictionary<string, FileRecord> remoteFiles = Index(ListFiles(remote));
+            Dictionary<string, FileRecord> localFiles;
+            Dictionary<string, FileRecord> remoteFiles;
+            if (onlyFiles != null)
+            {
+                localFiles = IndexAllowed(local, onlyFiles);
+                remoteFiles = IndexAllowed(remote, onlyFiles);
+            }
+            else
+            {
+                localFiles = Index(ListFiles(local));
+                remoteFiles = Index(ListFiles(remote));
+            }
             Dictionary<string, Snap> state = Store.ReadState(statePath);
+            if (onlyFiles != null) DropKeys(state, AllowSet(onlyFiles));
 
             if (direction == "Push")
             {
@@ -498,7 +547,16 @@ namespace DriveFolderSync
                 offline.Errors = 1;
                 return offline;
             }
-            SyncStats stats = SyncFolder(direction, folder.Local, remote, Store.StatePath(folder.Id), cloudReadbackIsTruth);
+            if (folder.Partial && folder.Dirs != null)
+            {
+                foreach (string dir in folder.Dirs)
+                {
+                    string path = string.IsNullOrEmpty(dir) ? folder.Local : Path.Combine(folder.Local, dir);
+                    if (!Directory.Exists(path)) Directory.CreateDirectory(path);
+                }
+            }
+            List<string> onlyFiles = folder.Partial ? (folder.Files ?? new List<string>()) : null;
+            SyncStats stats = SyncFolder(direction, folder.Local, remote, Store.StatePath(folder.Id), cloudReadbackIsTruth, onlyFiles);
             folder.LastSync = Stamp(DateTime.UtcNow);
             folder.LastErrors = stats.Errors;
             Store.Log(direction + " " + folder.Local + ": uploaded=" + stats.Up + " downloaded=" + stats.Down
@@ -532,6 +590,122 @@ namespace DriveFolderSync
                 Store.SaveLinks(links);
             }
             return total;
+        }
+
+        static Dictionary<string, bool> AllowSet(List<string> onlyFiles)
+        {
+            Dictionary<string, bool> allow = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            if (onlyFiles == null) return allow;
+            foreach (string rel in onlyFiles)
+            {
+                if (!string.IsNullOrEmpty(rel)) allow[rel] = true;
+            }
+            return allow;
+        }
+
+        static Dictionary<string, FileRecord> IndexAllowed(string root, List<string> onlyFiles)
+        {
+            Dictionary<string, FileRecord> map = new Dictionary<string, FileRecord>(StringComparer.OrdinalIgnoreCase);
+            if (onlyFiles == null || string.IsNullOrEmpty(root)) return map;
+            foreach (string rel in onlyFiles)
+            {
+                if (string.IsNullOrEmpty(rel)) continue;
+                if (SkipName(Path.GetFileName(rel), false)) continue;
+                string path = Path.Combine(root, rel);
+                if (!File.Exists(LongPath(path))) continue;
+                FileRecord record = FromDisk(path);
+                record.Rel = rel;
+                map[rel] = record;
+            }
+            return map;
+        }
+
+        static void DropKeys<T>(Dictionary<string, T> map, Dictionary<string, bool> allow)
+        {
+            List<string> drop = new List<string>();
+            foreach (string key in map.Keys)
+            {
+                if (!allow.ContainsKey(key)) drop.Add(key);
+            }
+            foreach (string key in drop) map.Remove(key);
+        }
+
+        public static LinkFolder RememberSelection(string providerId, string localRoot, IList<string> dirs, IList<string> files)
+        {
+            localRoot = Store.Norm(localRoot);
+            using (LockState(120))
+            {
+                List<LinkFolder> links = Store.ReadLinks();
+                foreach (LinkFolder existing in links)
+                {
+                    if (existing.Partial) continue;
+                    if (string.Equals(Store.Norm(existing.Local), localRoot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Store.Log("replica selection left the existing full link unchanged: " + localRoot);
+                        return existing;
+                    }
+                }
+                LinkFolder folder = null;
+                foreach (LinkFolder existing in links)
+                {
+                    if (!existing.Partial) continue;
+                    if (!string.Equals(existing.ProviderId, providerId, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (string.Equals(Store.Norm(existing.Local), localRoot, StringComparison.OrdinalIgnoreCase)) folder = existing;
+                }
+                if (folder == null)
+                {
+                    folder = new LinkFolder();
+                    folder.Id = Guid.NewGuid().ToString("n");
+                    folder.Local = localRoot;
+                    folder.ProviderId = providerId;
+                    folder.RemoteRelative = "";
+                    folder.Partial = true;
+                    folder.Files = new List<string>();
+                    folder.Dirs = new List<string>();
+                    folder.Added = Stamp(DateTime.UtcNow);
+                    if (!Directory.Exists(localRoot)) Directory.CreateDirectory(localRoot);
+                    links.Add(folder);
+                    Store.SaveState(Store.StatePath(folder.Id), new Dictionary<string, Snap>(StringComparer.OrdinalIgnoreCase));
+                }
+                if (folder.Files == null) folder.Files = new List<string>();
+                if (folder.Dirs == null) folder.Dirs = new List<string>();
+                AddUnique(folder.Dirs, dirs);
+                AddUnique(folder.Files, files);
+                Dictionary<string, Snap> state = Store.ReadState(Store.StatePath(folder.Id));
+                string remoteRoot = Store.ResolveRemote(folder, Store.DetectProviders());
+                if (files != null)
+                {
+                    foreach (string rel in files)
+                    {
+                        if (string.IsNullOrEmpty(rel)) continue;
+                        string localFile = Path.Combine(localRoot, rel);
+                        string remoteFile = string.IsNullOrEmpty(remoteRoot) ? null : Path.Combine(remoteRoot, rel);
+                        FileRecord left = File.Exists(localFile) ? FromDisk(localFile) : null;
+                        FileRecord right = !string.IsNullOrEmpty(remoteFile) && File.Exists(remoteFile) ? FromDisk(remoteFile) : null;
+                        if (left == null && right == null) continue;
+                        state[rel] = NewEntry(left, right, false, left != null && right != null && left.Length != right.Length);
+                    }
+                }
+                Store.SaveState(Store.StatePath(folder.Id), state);
+                Store.SaveLinks(links);
+                Store.Log("replica selection saved for " + localRoot);
+                return folder;
+            }
+        }
+
+        static void AddUnique(List<string> target, IList<string> more)
+        {
+            if (more == null) return;
+            foreach (string rel in more)
+            {
+                if (string.IsNullOrEmpty(rel)) continue;
+                bool found = false;
+                foreach (string existing in target)
+                {
+                    if (string.Equals(existing, rel, StringComparison.OrdinalIgnoreCase)) found = true;
+                }
+                if (!found) target.Add(rel);
+            }
         }
 
         public static LinkFolder Link(string local, string providerId, string remoteRelative)
