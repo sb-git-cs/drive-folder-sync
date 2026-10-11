@@ -56,13 +56,21 @@ namespace DriveFolderSync
             File.WriteAllText(Store.PidFile, System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
             Store.Log("host starting");
 
-            tray.Icon = System.Drawing.SystemIcons.Application;
+            Theme.Init();
+            tray.Icon = Theme.AppIconSized(SystemInformation.SmallIconSize.Width);
             tray.Text = "Drive Folder Sync";
             tray.Visible = true;
             ContextMenuStrip menu = new ContextMenuStrip();
-            menu.Items.Add("Open Drive Folder Sync", null, new EventHandler(Open_Click));
-            menu.Items.Add("Refresh from cloud", null, new EventHandler(Pull_Click));
-            menu.Items.Add("Upload to cloud", null, new EventHandler(Push_Click));
+            ToolStripItem open = menu.Items.Add("Open Drive Folder Sync", Theme.Glyph(Glyphs.FolderOpen, Theme.S(16), Theme.Text), new EventHandler(Open_Click));
+            open.Font = Theme.Strong;
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Refresh all from cloud", Theme.Glyph(Glyphs.Download, Theme.S(16), Theme.Text), new EventHandler(Pull_Click));
+            menu.Items.Add("Upload all to cloud", Theme.Glyph(Glyphs.Upload, Theme.S(16), Theme.Text), new EventHandler(Push_Click));
+            foreach (ToolStripItem item in menu.Items)
+            {
+                item.ImageScaling = ToolStripItemImageScaling.None;
+                if (item is ToolStripMenuItem) item.Padding = new Padding(0, Theme.S(4), 0, Theme.S(4));
+            }
             tray.ContextMenuStrip = menu;
             tray.DoubleClick += new EventHandler(Open_Click);
 

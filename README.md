@@ -2,7 +2,7 @@
 
 A File Explorer for folders you keep in sync with Google Drive, OneDrive, Dropbox, or any other cloud folder on this PC.
 
-Green rows changed on this PC since the last sync. Red rows changed in the cloud, or both sides changed. The Last synced column is the last time that file was recorded in sync.
+A green status changed on this PC since the last sync. A red status changed in the cloud, or both sides changed. Files with no changes show In sync. The Last synced column is the last time that file was recorded in sync.
 
 Linked folders refresh when you sign in and upload when Windows shuts down. Nothing is copied until you link a folder.
 
@@ -21,6 +21,20 @@ Select folders and files on a drive, then choose **Local replica**. Only those f
 Open a folder in a drive and choose **Link folder**. The local copy uses that same replica structure. At shutdown, edits in the local copy are copied to the cloud folder. At sign-in, the local copy is refreshed from the cloud.
 
 Personal and work Google Drive accounts both appear. A drive is included only after you link a folder from it.
+
+## Getting around
+
+Click a part of the address bar to jump to it, or click the empty space to type a path. Right-click a file or folder for Open, Show in File Explorer, Copy path, and the sync commands. Uninstall, the log folder, and About are under the **...** button.
+
+| Keys | Action |
+| --- | --- |
+| Alt+Left, Backspace | Back |
+| Alt+Right | Forward |
+| Alt+Up | Parent folder |
+| F5 | Refresh |
+| Ctrl+F | Search this folder |
+| Ctrl+L, Alt+D | Type a path |
+| Ctrl+A | Select all |
 
 ## Build
 

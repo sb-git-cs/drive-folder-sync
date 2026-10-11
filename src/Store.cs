@@ -75,7 +75,7 @@ namespace DriveFolderSync
 
     public class Store
     {
-        public const string Version = "1.1.1";
+        public const string Version = "1.2.0";
         static readonly object LogGate = new object();
         static string rootOverride;
         static string logOverride;
