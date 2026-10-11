@@ -236,6 +236,56 @@ namespace DriveFolderSync
             return made;
         }
 
+        public static void CopyInto(string source, string destRoot, string relative, List<string> dirs, List<string> files)
+        {
+            if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(destRoot) || string.IsNullOrEmpty(relative)) return;
+            if (dirs == null) dirs = new List<string>();
+            if (files == null) files = new List<string>();
+            Directory.CreateDirectory(destRoot);
+            string dest = Path.Combine(destRoot, relative);
+            if (File.Exists(source))
+            {
+                if (string.Equals(Store.Norm(source), Store.Norm(dest), StringComparison.OrdinalIgnoreCase)) return;
+                CopyFile(source, dest);
+                files.Add(relative);
+                return;
+            }
+            if (!Directory.Exists(source)) return;
+            if (Store.IsUnder(dest, source)) return;
+            dirs.Add(relative);
+            Directory.CreateDirectory(dest);
+            Stack<string> pending = new Stack<string>();
+            pending.Push("");
+            while (pending.Count > 0)
+            {
+                string sub = pending.Pop();
+                string from = string.IsNullOrEmpty(sub) ? source : Path.Combine(source, sub);
+                string relHere = string.IsNullOrEmpty(sub) ? relative : relative + "\\" + sub;
+                if (!string.IsNullOrEmpty(sub))
+                {
+                    dirs.Add(relHere);
+                    Directory.CreateDirectory(Path.Combine(destRoot, relHere));
+                }
+                FileSystemInfo[] children;
+                try { children = new DirectoryInfo(LongPath(from)).GetFileSystemInfos(); }
+                catch { continue; }
+                foreach (FileSystemInfo child in children)
+                {
+                    bool isDir = (child.Attributes & FileAttributes.Directory) != 0;
+                    if ((child.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                    if (SkipName(child.Name, isDir)) continue;
+                    string childSub = string.IsNullOrEmpty(sub) ? child.Name : sub + "\\" + child.Name;
+                    if (isDir) pending.Push(childSub);
+                    else
+                    {
+                        string childRel = relative + "\\" + childSub;
+                        CopyFile(child.FullName, Path.Combine(destRoot, childRel));
+                        files.Add(childRel);
+                    }
+                }
+            }
+        }
+
         public static void MaterializeSelection(string cloudRoot, string localRoot, IList<string> dirs, IList<string> files)
         {
             if (string.IsNullOrEmpty(localRoot)) return;

@@ -158,7 +158,15 @@ namespace DriveFolderSync
     public class MainForm : Form
     {
         readonly NavTree tree = new NavTree();
+        readonly NavTree localTree = new NavTree();
         readonly FileList list = new FileList();
+        readonly FileList localList = new FileList();
+        readonly SplitContainer sides = new SplitContainer();
+        readonly SplitContainer localSplit = new SplitContainer();
+        readonly Label driveCaption = new Label();
+        readonly Label localCaption = new Label();
+        readonly EmptyState localEmpty = new EmptyState();
+        readonly List<Row> localRows = new List<Row>();
         readonly ToolTip tips = new ToolTip();
         readonly AddressBar address = new AddressBar();
         readonly TextField search = new TextField(Glyphs.Search, true, "Search");
@@ -200,7 +208,12 @@ namespace DriveFolderSync
         bool sortAsc = true;
         bool userSorted;
         int hotIndex = -1;
+        FileList hotList;
         int savedSplit;
+        string paneDriveRoot = "";
+        string paneLocalRoot = "";
+        string driveKey = "vfs:pc";
+        string localKey = "";
         bool busy;
         readonly string startupLink;
 
@@ -214,8 +227,8 @@ namespace DriveFolderSync
             AutoScaleMode = AutoScaleMode.None;
             Font = Theme.Body;
             BackColor = Theme.Window;
-            Size = Theme.S(1180, 740);
-            MinimumSize = Theme.S(760, 480);
+            Size = Theme.S(1280, 760);
+            MinimumSize = Theme.S(980, 560);
             StartPosition = FormStartPosition.CenterScreen;
             KeyPreview = true;
             RestoreWindow();
@@ -225,7 +238,9 @@ namespace DriveFolderSync
             BuildContent();
             BuildStatusBar();
 
-            Controls.Add(split);
+            header.Dock = DockStyle.Top;
+            Controls.Add(sides);
+            Controls.Add(header);
             Controls.Add(nav);
             Controls.Add(commands);
             Controls.Add(status);
@@ -233,12 +248,14 @@ namespace DriveFolderSync
             HandleCreated += new EventHandler(delegate
             {
                 ShellImages.Attach(tree);
+                ShellImages.Attach(localTree);
                 Native.Caption(this, Theme.Chrome);
             });
             Shown += new EventHandler(delegate
             {
-                try { split.SplitterDistance = savedSplit > Theme.S(160) ? savedSplit : Theme.S(280); }
-                catch { }
+                PlaceSplit(sides, Theme.S(280), Math.Max(Theme.S(280), (sides.Width - sides.SplitterWidth) / 2));
+                PlaceSplit(split, Theme.S(120), savedSplit > Theme.S(120) ? savedSplit : Theme.S(220));
+                PlaceSplit(localSplit, Theme.S(120), Theme.S(220));
                 list.Focus();
             });
             Load += new EventHandler(MainForm_Load);
@@ -396,84 +413,133 @@ namespace DriveFolderSync
             return nav;
         }
 
+        static void PlaceSplit(SplitContainer pane, int minimum, int distance)
+        {
+            try
+            {
+                int limit = pane.Width - pane.SplitterWidth - minimum;
+                if (limit <= minimum) return;
+                pane.Panel1MinSize = minimum;
+                pane.Panel2MinSize = minimum;
+                if (distance < minimum) distance = minimum;
+                if (distance > limit) distance = limit;
+                pane.SplitterDistance = distance;
+            }
+            catch { }
+        }
+
         void BuildContent()
         {
-            split.Dock = DockStyle.Fill;
-            split.FixedPanel = FixedPanel.Panel1;
-            split.SplitterWidth = Theme.S(4);
-            split.BackColor = Theme.Window;
-            split.TabStop = false;
-            split.Panel1MinSize = Theme.S(160);
-            split.Panel1.BackColor = Theme.Pane;
-            split.Panel1.Padding = Theme.Pad(6, 8, 2, 8);
-            split.Panel2.BackColor = Theme.Window;
-            split.SplitterMoved += new SplitterEventHandler(delegate { if (split.Focused) list.Focus(); });
-            split.Panel1.Paint += new PaintEventHandler(delegate(object sender, PaintEventArgs e)
-            {
-                using (Pen pen = new Pen(Theme.Border)) e.Graphics.DrawLine(pen, split.Panel1.Width - 1, 0, split.Panel1.Width - 1, split.Panel1.Height);
-            });
-            split.Panel1.Resize += new EventHandler(delegate { split.Panel1.Invalidate(); });
+            sides.Dock = DockStyle.Fill;
+            sides.Orientation = Orientation.Vertical;
+            sides.SplitterWidth = Theme.S(6);
+            sides.BackColor = Theme.Border;
+            sides.TabStop = false;
+            sides.Panel1.BackColor = Theme.Window;
+            sides.Panel2.BackColor = Theme.Window;
 
-            tree.Dock = DockStyle.Fill;
-            tree.BorderStyle = BorderStyle.None;
-            tree.BackColor = Theme.Pane;
-            tree.ForeColor = Theme.Text;
-            tree.Font = Theme.Body;
-            tree.HideSelection = false;
-            tree.ShowLines = false;
-            tree.ShowRootLines = true;
-            tree.ShowPlusMinus = true;
-            tree.FullRowSelect = true;
-            tree.HotTracking = true;
-            tree.ShowNodeToolTips = true;
-            tree.ItemHeight = Theme.S(28);
-            tree.Indent = Theme.S(16);
-            tree.BeforeExpand += new TreeViewCancelEventHandler(Tree_BeforeExpand);
-            tree.AfterSelect += new TreeViewEventHandler(Tree_AfterSelect);
-            tree.NodeMouseClick += new TreeNodeMouseClickEventHandler(delegate(object sender, TreeNodeMouseClickEventArgs e)
-            {
-                if (e.Button == MouseButtons.Right) tree.SelectedNode = e.Node;
-            });
+            ConfigureTree(tree);
+            ConfigureTree(localTree);
             treeMenu.Opening += new CancelEventHandler(TreeMenu_Opening);
             tree.ContextMenuStrip = treeMenu;
-            split.Panel1.Controls.Add(tree);
+            localTree.ContextMenuStrip = treeMenu;
+            ConfigureList(list, empty);
+            ConfigureList(localList, localEmpty);
+            listMenu.Opening += new CancelEventHandler(ListMenu_Opening);
 
-            header.Dock = DockStyle.Top;
+            sides.Panel1.Controls.Add(MakePane(driveCaption, "Drive", split, tree, list));
+            sides.Panel2.Controls.Add(MakePane(localCaption, "Local replica", localSplit, localTree, localList));
+            WireTreeDrop(tree, false);
+            WireTreeDrop(localTree, true);
+        }
 
-            Panel listHost = new Panel();
-            listHost.Dock = DockStyle.Fill;
-            listHost.BackColor = Theme.Window;
-            listHost.Padding = Theme.Pad(10, 0, 0, 0);
+        void WireTreeDrop(NavTree view, bool localSide)
+        {
+            view.AllowDrop = true;
+            view.DragEnter += new DragEventHandler(List_DragEnter);
+            view.DragOver += new DragEventHandler(List_DragOver);
+            view.DragDrop += new DragEventHandler(delegate(object sender, DragEventArgs e)
+            {
+                if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+                string[] sources = e.Data.GetData(DataFormats.FileDrop) as string[];
+                if (sources == null || sources.Length == 0) return;
+                string dest = localSide ? localKey : driveKey;
+                Point point = view.PointToClient(new Point(e.X, e.Y));
+                TreeNode node = view.GetNodeAt(point);
+                if (node != null)
+                {
+                    NodeTag tag = node.Tag as NodeTag;
+                    if (tag != null && IsRealPath(tag.FullPath)) dest = tag.FullPath;
+                }
+                if (!IsRealPath(dest))
+                {
+                    ShowAction("Drop onto a folder on the drive or the local replica.", "warn");
+                    return;
+                }
+                StartTransfer(localSide, dest, sources);
+            });
+        }
 
-            list.Dock = DockStyle.Fill;
-            list.View = View.Details;
-            list.OwnerDraw = true;
-            list.MultiSelect = true;
-            list.FullRowSelect = true;
-            list.HideSelection = false;
-            list.BorderStyle = BorderStyle.None;
-            list.HeaderStyle = ColumnHeaderStyle.Clickable;
-            list.Font = Theme.Body;
-            list.BackColor = Theme.Window;
-            list.ForeColor = Theme.Text;
+        void ConfigureTree(NavTree view)
+        {
+            view.Dock = DockStyle.Fill;
+            view.BorderStyle = BorderStyle.None;
+            view.BackColor = Theme.Pane;
+            view.ForeColor = Theme.Text;
+            view.Font = Theme.Body;
+            view.HideSelection = false;
+            view.ShowLines = false;
+            view.ShowRootLines = true;
+            view.ShowPlusMinus = true;
+            view.FullRowSelect = true;
+            view.HotTracking = true;
+            view.ShowNodeToolTips = true;
+            view.ItemHeight = Theme.S(28);
+            view.Indent = Theme.S(16);
+            view.BeforeExpand += new TreeViewCancelEventHandler(Tree_BeforeExpand);
+            view.AfterSelect += new TreeViewEventHandler(Tree_AfterSelect);
+            view.NodeMouseClick += new TreeNodeMouseClickEventHandler(delegate(object sender, TreeNodeMouseClickEventArgs e)
+            {
+                if (e.Button == MouseButtons.Right) view.SelectedNode = e.Node;
+            });
+        }
+
+        void ConfigureList(FileList view, EmptyState blank)
+        {
+            view.Dock = DockStyle.Fill;
+            view.View = View.Details;
+            view.OwnerDraw = true;
+            view.MultiSelect = true;
+            view.FullRowSelect = true;
+            view.HideSelection = false;
+            view.BorderStyle = BorderStyle.None;
+            view.HeaderStyle = ColumnHeaderStyle.Clickable;
+            view.Font = Theme.Body;
+            view.BackColor = Theme.Window;
+            view.ForeColor = Theme.Text;
+            view.AllowDrop = true;
             ImageList spacer = new ImageList();
             spacer.ImageSize = new Size(1, Theme.S(32));
-            list.SmallImageList = spacer;
-            list.Columns.Add("Name", Theme.S(320));
-            list.Columns.Add("Status", Theme.S(200));
-            list.Columns.Add("Size", Theme.S(90), HorizontalAlignment.Right);
-            list.Columns.Add("Date modified", Theme.S(150));
-            list.Columns.Add("Last synced", Theme.S(150));
-            list.DrawColumnHeader += new DrawListViewColumnHeaderEventHandler(delegate(object sender, DrawListViewColumnHeaderEventArgs e) { e.DrawDefault = true; });
-            list.DrawItem += new DrawListViewItemEventHandler(List_DrawItem);
-            list.DrawSubItem += new DrawListViewSubItemEventHandler(List_DrawSubItem);
-            list.ColumnClick += new ColumnClickEventHandler(List_ColumnClick);
-            list.ItemActivate += new EventHandler(List_ItemActivate);
-            list.MouseMove += new MouseEventHandler(List_MouseMove);
-            list.MouseLeave += new EventHandler(delegate { SetHot(-1); });
-            list.GotFocus += new EventHandler(delegate { list.Invalidate(); });
-            list.LostFocus += new EventHandler(delegate { list.Invalidate(); });
-            list.SelectedIndexChanged += new EventHandler(delegate
+            view.SmallImageList = spacer;
+            view.Columns.Add("Name", Theme.S(240));
+            view.Columns.Add("Status", Theme.S(150));
+            view.Columns.Add("Size", Theme.S(80), HorizontalAlignment.Right);
+            view.Columns.Add("Date modified", Theme.S(130));
+            view.Columns.Add("Last synced", Theme.S(130));
+            view.DrawColumnHeader += new DrawListViewColumnHeaderEventHandler(delegate(object sender, DrawListViewColumnHeaderEventArgs e) { e.DrawDefault = true; });
+            view.DrawItem += new DrawListViewItemEventHandler(List_DrawItem);
+            view.DrawSubItem += new DrawListViewSubItemEventHandler(List_DrawSubItem);
+            view.ColumnClick += new ColumnClickEventHandler(List_ColumnClick);
+            view.ItemActivate += new EventHandler(List_ItemActivate);
+            view.ItemDrag += new ItemDragEventHandler(List_ItemDrag);
+            view.DragEnter += new DragEventHandler(List_DragEnter);
+            view.DragOver += new DragEventHandler(List_DragOver);
+            view.DragDrop += new DragEventHandler(List_DragDrop);
+            view.MouseMove += new MouseEventHandler(List_MouseMove);
+            view.MouseLeave += new EventHandler(delegate { SetHot(view, -1); });
+            view.GotFocus += new EventHandler(delegate { view.Invalidate(); });
+            view.LostFocus += new EventHandler(delegate { view.Invalidate(); });
+            view.SelectedIndexChanged += new EventHandler(delegate
             {
                 if (selectionPending) return;
                 selectionPending = true;
@@ -483,15 +549,49 @@ namespace DriveFolderSync
                     UpdateStatus();
                 }));
             });
-            list.Resize += new EventHandler(delegate { FitColumns(); PlaceEmpty(); });
-            list.ColumnWidthChanged += new ColumnWidthChangedEventHandler(delegate(object sender, ColumnWidthChangedEventArgs e) { if (e.ColumnIndex != 0) FitColumns(); });
-            listMenu.Opening += new CancelEventHandler(ListMenu_Opening);
-            list.ContextMenuStrip = listMenu;
-            list.Controls.Add(empty);
+            view.Resize += new EventHandler(delegate { FitColumns(view); PlaceEmpty(view, blank); });
+            view.ColumnWidthChanged += new ColumnWidthChangedEventHandler(delegate(object sender, ColumnWidthChangedEventArgs e)
+            {
+                if (e.ColumnIndex != 0) FitColumns(view);
+            });
+            view.ContextMenuStrip = listMenu;
+            view.Controls.Add(blank);
+        }
 
-            listHost.Controls.Add(list);
-            split.Panel2.Controls.Add(listHost);
-            split.Panel2.Controls.Add(header);
+        Panel MakePane(Label caption, string title, SplitContainer inner, NavTree sideTree, FileList sideList)
+        {
+            caption.Text = title;
+            caption.Dock = DockStyle.Top;
+            caption.Height = Theme.S(36);
+            caption.Font = Theme.Strong;
+            caption.ForeColor = Theme.Text;
+            caption.BackColor = Theme.Pane;
+            caption.TextAlign = ContentAlignment.MiddleLeft;
+            caption.Padding = Theme.Pad(12, 0, 8, 0);
+            caption.AutoEllipsis = true;
+
+            inner.Dock = DockStyle.Fill;
+            inner.FixedPanel = FixedPanel.Panel1;
+            inner.SplitterWidth = Theme.S(4);
+            inner.BackColor = Theme.Window;
+            inner.TabStop = false;
+            inner.Panel1.BackColor = Theme.Pane;
+            inner.Panel1.Padding = Theme.Pad(4, 4, 2, 4);
+            inner.Panel2.BackColor = Theme.Window;
+            inner.Panel2.Padding = Theme.Pad(8, 0, 4, 0);
+            inner.Panel1.Controls.Add(sideTree);
+            Panel listHost = new Panel();
+            listHost.Dock = DockStyle.Fill;
+            listHost.BackColor = Theme.Window;
+            listHost.Controls.Add(sideList);
+            inner.Panel2.Controls.Add(listHost);
+
+            Panel host = new Panel();
+            host.Dock = DockStyle.Fill;
+            host.BackColor = Theme.Window;
+            host.Controls.Add(inner);
+            host.Controls.Add(caption);
+            return host;
         }
 
         void BuildStatusBar()
@@ -546,11 +646,12 @@ namespace DriveFolderSync
                 search.Box.SelectAll();
             }
             else if ((e.Control && e.KeyCode == Keys.L) || (e.Alt && e.KeyCode == Keys.D) || e.KeyCode == Keys.F4) address.BeginEdit();
-            else if (e.Control && e.KeyCode == Keys.A && list.Focused)
+            else if (e.Control && e.KeyCode == Keys.A && (list.Focused || localList.Focused))
             {
-                list.BeginUpdate();
-                foreach (ListViewItem item in list.Items) item.Selected = true;
-                list.EndUpdate();
+                FileList view = ActiveList();
+                view.BeginUpdate();
+                foreach (ListViewItem item in view.Items) item.Selected = true;
+                view.EndUpdate();
             }
             else handled = false;
             if (handled)
@@ -564,6 +665,8 @@ namespace DriveFolderSync
         void RefreshAll()
         {
             links = Store.ReadLinks();
+            paneDriveRoot = "";
+            paneLocalRoot = "";
             LoadCurrent();
         }
 
@@ -571,60 +674,153 @@ namespace DriveFolderSync
         {
             providers = Store.DetectProviders();
             links = Store.ReadLinks();
-            tree.BeginUpdate();
-            tree.Nodes.Clear();
-            NodeTag pcTag = new NodeTag();
-            pcTag.Key = "vfs:pc";
-            pcTag.Loaded = true;
-            TreeNode pc = new TreeNode("This PC");
-            pc.Tag = pcTag;
-            pc.ImageIndex = ShellImages.ThisPc();
-            pc.SelectedImageIndex = pc.ImageIndex;
-            foreach (Provider provider in providers)
-            {
-                NodeTag tag = new NodeTag();
-                tag.Key = provider.Root;
-                tag.FullPath = provider.Root;
-                TreeNode node = MakeDirNode(provider.Title, tag);
-                node.ImageIndex = ShellImages.RealIndex(provider.Root);
-                node.SelectedImageIndex = node.ImageIndex;
-                node.ToolTipText = provider.Root;
-                pc.Nodes.Add(node);
-                string replica = Store.ReplicaRoot(provider);
-                NodeTag replicaTag = new NodeTag();
-                replicaTag.Key = replica;
-                replicaTag.FullPath = replica;
-                TreeNode replicaNode = MakeDirNode("Local replica  ·  " + Store.ReplicaLeaf(provider), replicaTag);
-                replicaNode.ToolTipText = replica + "\r\nSelected folders and files from " + provider.Root;
-                pc.Nodes.Add(replicaNode);
-            }
-            NodeTag linkedTag = new NodeTag();
-            linkedTag.Key = "vfs:linked";
-            linkedTag.Loaded = true;
-            TreeNode linked = new TreeNode("Linked folders");
-            linked.Tag = linkedTag;
-            linked.ImageIndex = ShellImages.Index(Store.LocalRoot(), true);
-            linked.SelectedImageIndex = linked.ImageIndex;
-            foreach (LinkFolder folder in links)
-            {
-                NodeTag tag = new NodeTag();
-                tag.Key = folder.Local;
-                tag.FullPath = folder.Local;
-                TreeNode node = MakeDirNode(Path.GetFileName(folder.Local.TrimEnd('\\')), tag);
-                node.ToolTipText = folder.Local;
-                linked.Nodes.Add(node);
-            }
-            pc.Nodes.Add(linked);
-            tree.Nodes.Add(pc);
-            pc.Expand();
+            paneDriveRoot = "";
+            paneLocalRoot = "";
+        }
+
+        void ApplyTrees(string driveRoot, string localRoot, string selectDrive, string selectLocal)
+        {
+            bool same = string.Equals(paneDriveRoot, driveRoot ?? "", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(paneLocalRoot, localRoot ?? "", StringComparison.OrdinalIgnoreCase);
             suppressTree = true;
             try
             {
-                TreeNode selected = FindNode(tree.Nodes, current);
-                if (selected != null) tree.SelectedNode = selected;
+                if (!same)
+                {
+                    paneDriveRoot = driveRoot ?? "";
+                    paneLocalRoot = localRoot ?? "";
+                    FillTree(tree, paneDriveRoot, true);
+                    FillTree(localTree, paneLocalRoot, false);
+                }
+                Reveal(tree, paneDriveRoot, selectDrive);
+                Reveal(localTree, paneLocalRoot, selectLocal);
             }
             finally { suppressTree = false; }
-            tree.EndUpdate();
+        }
+
+        void FillTree(TreeView view, string root, bool driveSide)
+        {
+            view.BeginUpdate();
+            view.Nodes.Clear();
+            if (root == "vfs:pc")
+            {
+                NodeTag pcTag = new NodeTag();
+                pcTag.Key = "vfs:pc";
+                pcTag.Loaded = true;
+                TreeNode pc = new TreeNode("This PC");
+                pc.Tag = pcTag;
+                pc.ImageIndex = ShellImages.ThisPc();
+                pc.SelectedImageIndex = pc.ImageIndex;
+                foreach (Provider provider in providers)
+                {
+                    NodeTag tag = new NodeTag();
+                    tag.Key = provider.Root;
+                    tag.FullPath = provider.Root;
+                    TreeNode node = MakeDirNode(provider.Title, tag);
+                    node.ImageIndex = ShellImages.RealIndex(provider.Root);
+                    node.SelectedImageIndex = node.ImageIndex;
+                    node.ToolTipText = provider.Root;
+                    pc.Nodes.Add(node);
+                }
+                NodeTag linkedTag = new NodeTag();
+                linkedTag.Key = "vfs:linked";
+                linkedTag.Loaded = true;
+                TreeNode linked = new TreeNode("Linked folders");
+                linked.Tag = linkedTag;
+                linked.ImageIndex = ShellImages.Index(Store.LocalRoot(), true);
+                linked.SelectedImageIndex = linked.ImageIndex;
+                foreach (LinkFolder folder in links)
+                {
+                    NodeTag tag = new NodeTag();
+                    tag.Key = folder.Local;
+                    tag.FullPath = folder.Local;
+                    TreeNode node = MakeDirNode(Path.GetFileName(folder.Local.TrimEnd('\\')), tag);
+                    node.ToolTipText = folder.Local;
+                    linked.Nodes.Add(node);
+                }
+                pc.Nodes.Add(linked);
+                view.Nodes.Add(pc);
+                pc.Expand();
+            }
+            else if (root == "vfs:replicas")
+            {
+                NodeTag tag = new NodeTag();
+                tag.Key = "vfs:replicas";
+                tag.Loaded = true;
+                TreeNode rootNode = new TreeNode("Local replicas");
+                rootNode.Tag = tag;
+                rootNode.ImageIndex = ShellImages.Index(Store.LocalRoot(), true);
+                rootNode.SelectedImageIndex = rootNode.ImageIndex;
+                foreach (Provider provider in providers)
+                {
+                    string replica = Store.ReplicaRoot(provider);
+                    NodeTag child = new NodeTag();
+                    child.Key = replica;
+                    child.FullPath = replica;
+                    TreeNode node = MakeDirNode(Store.ReplicaLeaf(provider), child);
+                    node.ToolTipText = replica;
+                    rootNode.Nodes.Add(node);
+                }
+                view.Nodes.Add(rootNode);
+                rootNode.Expand();
+            }
+            else if (!string.IsNullOrEmpty(root) && root != "vfs:linked")
+            {
+                NodeTag tag = new NodeTag();
+                tag.Key = root;
+                tag.FullPath = root;
+                string title = Path.GetFileName(root.TrimEnd('\\'));
+                if (driveSide)
+                {
+                    foreach (Provider provider in providers)
+                    {
+                        if (string.Equals(Store.Norm(provider.Root), Store.Norm(root), StringComparison.OrdinalIgnoreCase))
+                            title = provider.Title;
+                    }
+                }
+                else title = "Local replica  ·  " + (string.IsNullOrEmpty(title) ? "replica" : title);
+                TreeNode node = MakeDirNode(title, tag);
+                if (Directory.Exists(root)) node.ImageIndex = ShellImages.RealIndex(root);
+                node.SelectedImageIndex = node.ImageIndex;
+                node.ToolTipText = root;
+                view.Nodes.Add(node);
+                if (Directory.Exists(root)) node.Expand();
+            }
+            view.EndUpdate();
+        }
+
+        void Reveal(TreeView view, string root, string full)
+        {
+            if (view.Nodes.Count == 0 || string.IsNullOrEmpty(full)) return;
+            if (full == "vfs:pc" || full == "vfs:linked" || full == "vfs:replicas" || string.Equals(full, root, StringComparison.OrdinalIgnoreCase))
+            {
+                TreeNode found = FindNode(view.Nodes, full);
+                if (found == null) found = view.Nodes[0];
+                view.SelectedNode = found;
+                if (found != null) found.EnsureVisible();
+                return;
+            }
+            TreeNode node = FindNode(view.Nodes, root);
+            if (node == null) node = view.Nodes[0];
+            string relative = Store.Relative(full, root);
+            if (node != null && !string.IsNullOrEmpty(relative))
+            {
+                foreach (string part in relative.Split('\\'))
+                {
+                    if (string.IsNullOrEmpty(part)) continue;
+                    NodeTag tag = node.Tag as NodeTag;
+                    if (tag != null && !tag.Loaded) node.Expand();
+                    TreeNode next = null;
+                    foreach (TreeNode child in node.Nodes)
+                    {
+                        if (string.Equals(child.Text, part, StringComparison.OrdinalIgnoreCase)) { next = child; break; }
+                    }
+                    if (next == null) break;
+                    node = next;
+                }
+            }
+            view.SelectedNode = node;
+            if (node != null) node.EnsureVisible();
         }
 
         TreeNode MakeDirNode(string name, NodeTag tag)
@@ -671,7 +867,7 @@ namespace DriveFolderSync
         {
             if (suppressTree) return;
             NodeTag tag = e.Node.Tag as NodeTag;
-            if (tag == null || string.IsNullOrEmpty(tag.Key)) return;
+            if (tag == null || string.IsNullOrEmpty(tag.Key) || tag.Key == "vfs:replicas") return;
             Navigate(tag.Key, true);
         }
 
@@ -854,6 +1050,19 @@ namespace DriveFolderSync
             else ShowAction("Windows can't find \u201C" + text + "\u201D.", "warn");
         }
 
+        sealed class Page
+        {
+            public List<Row> Drive = new List<Row>();
+            public List<Row> Local = new List<Row>();
+            public ViewInfo Info = new ViewInfo();
+            public string DriveRoot = "";
+            public string LocalRoot = "";
+            public string DriveKey = "";
+            public string LocalKey = "";
+            public string DriveCaption = "Drive";
+            public string LocalCaption = "Local replica";
+        }
+
         void LoadCurrent()
         {
             int token = ++loadToken;
@@ -863,13 +1072,12 @@ namespace DriveFolderSync
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string error = null;
-                List<Row> built = new List<Row>();
-                ViewInfo info = new ViewInfo();
+                Page page = new Page();
                 List<Provider> found = null;
                 try
                 {
                     found = Store.DetectProviders();
-                    built = BuildRows(key, info);
+                    page = BuildPage(key, found);
                 }
                 catch (Exception ex) { error = ex.Message; }
                 try
@@ -879,31 +1087,223 @@ namespace DriveFolderSync
                         if (token != loadToken) return;
                         loading = false;
                         if (found != null) providers = found;
-                        List<string> keep = SelectedPaths();
+                        List<string> keepDrive = SelectedPaths(list);
+                        List<string> keepLocal = SelectedPaths(localList);
                         rows.Clear();
+                        localRows.Clear();
                         loadError = error;
-                        if (error != null)
+                        if (error != null || page == null)
                         {
                             char glyph;
                             List<AddressBar.Crumb> crumbs = Crumbs(key, out glyph);
                             view = new ViewInfo();
                             view.Title = crumbs[crumbs.Count - 1].Text;
                             view.Detail = key.StartsWith("vfs:") ? "" : key;
+                            driveKey = key;
+                            localKey = "";
                         }
                         else
                         {
-                            rows.AddRange(built);
-                            view = info;
+                            rows.AddRange(page.Drive);
+                            localRows.AddRange(page.Local);
+                            view = page.Info;
+                            driveKey = page.DriveKey;
+                            localKey = page.LocalKey;
+                            driveCaption.Text = page.DriveCaption;
+                            localCaption.Text = page.LocalCaption;
+                            ApplyTrees(page.DriveRoot, page.LocalRoot, page.DriveKey, page.LocalKey);
                         }
                         header.Set(view.Title, view.Detail, view.Tip, view.Badge, view.BadgeKind, view.Legend);
                         search.SetCue("Search " + view.Title);
                         if (userSorted || !view.Virtual) SortRows();
                         list.SetSortArrow(userSorted || !view.Virtual ? sortColumn : -1, sortAsc);
-                        ShowRows(keep);
+                        localList.SetSortArrow(userSorted || !view.Virtual ? sortColumn : -1, sortAsc);
+                        ShowRows(keepDrive, keepLocal);
                     }));
                 }
                 catch (InvalidOperationException) { }
             });
+        }
+
+        Page BuildPage(string key, List<Provider> found)
+        {
+            Page page = new Page();
+            if (key == "vfs:pc")
+            {
+                foreach (Provider provider in found)
+                {
+                    Row row = new Row();
+                    row.Name = provider.Title;
+                    row.Status = provider.IsOnline ? "Connected" : "Not connected";
+                    row.Kind = provider.IsOnline ? "same" : "warn";
+                    row.FullPath = provider.Root;
+                    row.NavigateKey = provider.Root;
+                    row.IsDir = true;
+                    row.RealIcon = true;
+                    page.Drive.Add(row);
+                    Row replica = new Row();
+                    replica.Name = Store.ReplicaLeaf(provider);
+                    replica.Detail = provider.Name;
+                    replica.Status = Directory.Exists(Store.ReplicaRoot(provider)) ? "Selected folders and files" : "Not created yet";
+                    replica.Kind = "none";
+                    replica.FullPath = Store.ReplicaRoot(provider);
+                    replica.NavigateKey = Store.ReplicaRoot(provider);
+                    replica.IsDir = true;
+                    page.Local.Add(replica);
+                }
+                Row linked = new Row();
+                int count = Store.ReadLinks().Count;
+                linked.Name = "Linked folders";
+                linked.Status = count + " linked";
+                linked.Kind = "none";
+                linked.IsDir = true;
+                linked.FullPath = Store.LocalRoot();
+                linked.NavigateKey = "vfs:linked";
+                page.Drive.Add(linked);
+                page.Info.Title = "This PC";
+                page.Info.Detail = "Open a drive. Its folders stay on the left, and the local replica stays on the right.";
+                page.Info.Badge = found.Count == 1 ? "1 drive" : found.Count + " drives";
+                page.Info.Virtual = true;
+                page.DriveRoot = "vfs:pc";
+                page.LocalRoot = "vfs:replicas";
+                page.DriveKey = "vfs:pc";
+                page.LocalKey = "vfs:replicas";
+                page.DriveCaption = "Drive";
+                page.LocalCaption = "Local replica";
+                return page;
+            }
+            Store.Place place = Store.FindPlace(key, found);
+            if (place != null)
+            {
+                string leaf = Store.ReplicaLeaf(place.Provider);
+                page.DriveRoot = place.Provider.Root;
+                page.LocalRoot = Store.ReplicaRoot(place.Provider);
+                page.DriveKey = place.CloudPath;
+                page.LocalKey = place.ReplicaPath;
+                page.DriveCaption = place.Provider.Title + "    " + place.CloudPath;
+                page.LocalCaption = "Local replica  ·  " + leaf + "    " + place.ReplicaPath;
+                List<LinkFolder> folders = Store.ReadLinks();
+                LinkFolder link = SyncEngine.FindLink(place.ReplicaPath, folders);
+                if (link == null) link = SyncEngine.FindLink(place.CloudPath, folders);
+                Dictionary<string, Snap> state = link == null ? null : Store.ReadState(Store.StatePath(link.Id));
+                page.Drive = ListFolder(place.CloudPath, place.ReplicaPath, place.Relative, false, link, state);
+                page.Local = ListFolder(place.ReplicaPath, place.CloudPath, place.Relative, true, link, state);
+                page.Info.Title = string.IsNullOrEmpty(place.Relative) ? place.Provider.Name : Path.GetFileName(place.Relative.TrimEnd('\\'));
+                page.Info.Detail = "Drag files or folders to the other side. A dropped folder keeps its contents and the same path.";
+                page.Info.Tip = "In the cloud:  " + place.CloudPath + "\r\nLocal replica:  " + place.ReplicaPath;
+                page.Info.Legend = true;
+                if (link == null) page.Info.Badge = "Not linked yet";
+                else
+                {
+                    string when = SyncEngine.FormatWhen(link.LastSync);
+                    page.Info.Badge = string.IsNullOrEmpty(when) ? "Linked, not synced yet" : "Synced " + when;
+                    page.Info.BadgeKind = "info";
+                    if (link.LastErrors > 0)
+                    {
+                        page.Info.Badge = page.Info.Badge + "  ·  " + link.LastErrors + (link.LastErrors == 1 ? " error" : " errors");
+                        page.Info.BadgeKind = "cloud";
+                    }
+                }
+                return page;
+            }
+            page.Info = new ViewInfo();
+            page.Drive = BuildRows(key, page.Info);
+            page.DriveKey = key;
+            page.DriveRoot = key == "vfs:linked" ? "vfs:linked" : key;
+            page.LocalRoot = "";
+            page.LocalKey = "";
+            page.DriveCaption = page.Info.Title;
+            page.LocalCaption = "Local replica";
+            return page;
+        }
+
+        List<Row> ListFolder(string folder, string otherFolder, string relBase, bool folderIsLocal, LinkFolder link, Dictionary<string, Snap> state)
+        {
+            List<Row> built = new List<Row>();
+            if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) return built;
+            FileSystemInfo[] children;
+            try { children = new DirectoryInfo(folder).GetFileSystemInfos(); }
+            catch { return built; }
+            foreach (FileSystemInfo child in children)
+            {
+                bool isDir = (child.Attributes & FileAttributes.Directory) != 0;
+                if ((child.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                if (SyncEngine.SkipName(child.Name, isDir)) continue;
+                Row row = new Row();
+                row.Name = child.Name;
+                row.IsDir = isDir;
+                row.FullPath = child.FullName;
+                row.NavigateKey = isDir ? child.FullName : null;
+                SetFile(row, child, isDir);
+                string rel = string.IsNullOrEmpty(relBase) ? child.Name : relBase + "\\" + child.Name;
+                string otherPath = string.IsNullOrEmpty(otherFolder) ? null : Path.Combine(otherFolder, child.Name);
+                bool otherExists = !string.IsNullOrEmpty(otherPath) && (isDir ? Directory.Exists(otherPath) : File.Exists(otherPath));
+                if (isDir)
+                {
+                    row.Status = "Folder";
+                    row.Kind = "none";
+                    if (!otherExists)
+                    {
+                        row.Status = folderIsLocal ? "Only on this PC" : "Only in the cloud";
+                        row.Kind = folderIsLocal ? "local" : "cloud";
+                    }
+                    if (link != null) SetSynced(row, link.LastSync);
+                }
+                else if (link != null && state != null)
+                {
+                    FileInfo file = (FileInfo)child;
+                    FileRecord here = new FileRecord();
+                    here.Rel = rel;
+                    here.Full = child.FullName;
+                    here.Length = file.Length;
+                    here.MtimeUtc = file.LastWriteTimeUtc;
+                    FileRecord localRec = folderIsLocal ? here : null;
+                    FileRecord remoteRec = folderIsLocal ? null : here;
+                    if (otherExists)
+                    {
+                        FileInfo other = new FileInfo(otherPath);
+                        FileRecord otherRec = new FileRecord();
+                        otherRec.Rel = rel;
+                        otherRec.Full = otherPath;
+                        otherRec.Length = other.Length;
+                        otherRec.MtimeUtc = other.LastWriteTimeUtc;
+                        if (folderIsLocal) remoteRec = otherRec;
+                        else localRec = otherRec;
+                    }
+                    Snap snap = state.ContainsKey(rel) ? state[rel] : null;
+                    SyncEngine.RowStatus classified = SyncEngine.Classify(localRec, remoteRec, snap);
+                    row.Kind = classified.Kind;
+                    row.Status = classified.Text;
+                    SetSynced(row, string.IsNullOrEmpty(classified.LastSynced) ? link.LastSync : classified.LastSynced);
+                }
+                else if (!otherExists)
+                {
+                    row.Status = folderIsLocal ? "Only on this PC" : "Only in the cloud";
+                    row.Kind = folderIsLocal ? "local" : "cloud";
+                }
+                else
+                {
+                    row.Kind = "same";
+                    row.Status = "In both places";
+                    if (!isDir && File.Exists(otherPath))
+                    {
+                        FileInfo other = new FileInfo(otherPath);
+                        FileInfo file = child as FileInfo;
+                        if (file != null && other.Length != file.Length)
+                        {
+                            row.Kind = "cloud";
+                            row.Status = "Changed on both sides";
+                        }
+                    }
+                }
+                built.Add(row);
+            }
+            built.Sort(delegate(Row a, Row b)
+            {
+                if (a.IsDir != b.IsDir) return a.IsDir ? -1 : 1;
+                return NaturalCompare(a.Name, b.Name);
+            });
+            return built;
         }
 
         static string ParseLocal(string stamp, out DateTime when)
@@ -1295,10 +1695,16 @@ namespace DriveFolderSync
             catch { return string.Compare(left, right, StringComparison.OrdinalIgnoreCase); }
         }
 
-        List<string> SelectedPaths()
+        FileList ActiveList()
+        {
+            if (localList.Focused) return localList;
+            return list;
+        }
+
+        List<string> SelectedPaths(FileList view)
         {
             List<string> paths = new List<string>();
-            foreach (ListViewItem item in list.SelectedItems)
+            foreach (ListViewItem item in view.SelectedItems)
             {
                 Row row = item.Tag as Row;
                 if (row != null) paths.Add(row.FullPath ?? row.NavigateKey ?? row.Name);
@@ -1306,10 +1712,10 @@ namespace DriveFolderSync
             return paths;
         }
 
-        List<Row> SelectedRows()
+        List<Row> SelectedRows(FileList view)
         {
             List<Row> selected = new List<Row>();
-            foreach (ListViewItem item in list.SelectedItems)
+            foreach (ListViewItem item in view.SelectedItems)
             {
                 Row row = item.Tag as Row;
                 if (row != null) selected.Add(row);
@@ -1319,19 +1725,29 @@ namespace DriveFolderSync
 
         void ShowRows()
         {
-            ShowRows(SelectedPaths());
+            ShowRows(SelectedPaths(list), SelectedPaths(localList));
         }
 
-        void ShowRows(List<string> keep)
+        void ShowRows(List<string> keepDrive, List<string> keepLocal)
         {
             string query = search.Query.Trim();
+            hotList = null;
+            hotIndex = -1;
+            FillList(list, rows, keepDrive, query);
+            FillList(localList, localRows, keepLocal, query);
+            UpdateEmpty(empty, list, query, false);
+            UpdateEmpty(localEmpty, localList, query, true);
+            UpdateStatus();
+        }
+
+        void FillList(FileList view, List<Row> source, List<string> keep, string query)
+        {
             Dictionary<string, bool> wanted = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
             if (keep != null) foreach (string path in keep) if (path != null) wanted[path] = true;
-            hotIndex = -1;
-            list.BeginUpdate();
-            list.Items.Clear();
+            view.BeginUpdate();
+            view.Items.Clear();
             ListViewItem focus = null;
-            foreach (Row row in rows)
+            foreach (Row row in source)
             {
                 if (query.Length > 0 && (row.Name ?? "").IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0) continue;
                 ListViewItem item = new ListViewItem(row.Name);
@@ -1342,7 +1758,7 @@ namespace DriveFolderSync
                 item.Tag = row;
                 if (row.Icon < 0)
                     row.Icon = row.RealIcon ? ShellImages.RealIndex(row.FullPath) : ShellImages.Index(string.IsNullOrEmpty(row.FullPath) ? "C:\\" : row.FullPath, row.IsDir);
-                list.Items.Add(item);
+                view.Items.Add(item);
                 string path = row.FullPath ?? row.NavigateKey ?? row.Name;
                 if (path != null && wanted.ContainsKey(path))
                 {
@@ -1351,43 +1767,47 @@ namespace DriveFolderSync
                 }
             }
             if (focus != null) focus.Focused = true;
-            list.EndUpdate();
-            FitColumns();
-            UpdateEmpty(query);
-            UpdateStatus();
+            view.EndUpdate();
+            FitColumns(view);
         }
 
-        void UpdateEmpty(string query)
+        void UpdateEmpty(EmptyState blank, FileList view, string query, bool localSide)
         {
-            bool show = !loading && list.Items.Count == 0;
+            bool show = !loading && view.Items.Count == 0;
             if (show)
             {
-                if (loadError != null) empty.Set(Glyphs.Warning, "This folder isn't available", loadError);
-                else if (query.Length > 0) empty.Set(Glyphs.Search, "No items match \u201C" + query + "\u201D", "Check the spelling, or clear the search to see everything in this folder.");
-                else if (current == "vfs:linked") empty.Set(Glyphs.Link, "No linked folders yet", "Open a folder on a drive, then choose Link folder. Linked folders upload when Windows shuts down and refresh when you sign in.");
-                else empty.Set(Glyphs.FolderOpen, "This folder is empty", "Nothing here yet. Files added on this PC or in the cloud show up here.");
+                if (!localSide && loadError != null) blank.Set(Glyphs.Warning, "This folder isn't available", loadError);
+                else if (query.Length > 0) blank.Set(Glyphs.Search, "No items match \u201C" + query + "\u201D", "Check the spelling, or clear the search to see everything in this folder.");
+                else if (!localSide && current == "vfs:linked") blank.Set(Glyphs.Link, "No linked folders yet", "Open a folder on a drive, then choose Link folder. Linked folders upload when Windows shuts down and refresh when you sign in.");
+                else if (localSide && !string.IsNullOrEmpty(localKey) && localKey != "vfs:replicas" && !Directory.Exists(localKey))
+                    blank.Set(Glyphs.SaveLocal, "Nothing copied here yet", "Drag folders or files from the drive. They keep the same path.");
+                else if (localSide && string.IsNullOrEmpty(localKey))
+                    blank.Set(Glyphs.SaveLocal, "No local replica for this folder", "Open a drive to see its replica beside it.");
+                else blank.Set(Glyphs.FolderOpen, "This folder is empty", localSide ? "Drag files or folders here from the drive." : "Drag files or folders here from the local replica.");
             }
-            empty.Visible = show;
-            PlaceEmpty();
+            blank.Visible = show;
+            PlaceEmpty(view, blank);
         }
 
-        void PlaceEmpty()
+        void PlaceEmpty(FileList view, EmptyState blank)
         {
-            int width = Math.Min(empty.Width, Math.Max(Theme.S(200), list.ClientSize.Width - Theme.S(40)));
-            empty.Width = width;
+            int width = Math.Min(blank.Width, Math.Max(Theme.S(180), view.ClientSize.Width - Theme.S(24)));
+            blank.Width = width;
             int headerHeight = Theme.S(28);
-            int y = Math.Max(headerHeight + Theme.S(24), (list.ClientSize.Height - empty.Height) / 2 - Theme.S(20));
-            empty.Location = new Point((list.ClientSize.Width - width) / 2, y);
+            int y = Math.Max(headerHeight + Theme.S(16), (view.ClientSize.Height - blank.Height) / 2 - Theme.S(12));
+            blank.Location = new Point(Math.Max(0, (view.ClientSize.Width - width) / 2), y);
         }
 
         void UpdateStatus()
         {
-            int total = rows.Count;
-            int shown = list.Items.Count;
+            FileList view = ActiveList();
+            List<Row> source = view == localList ? localRows : rows;
+            int total = source.Count;
+            int shown = view.Items.Count;
             if (loading) countLabel.Text = "Loading\u2026";
             else if (shown != total) countLabel.Text = shown + " of " + total + " items";
             else countLabel.Text = total + (total == 1 ? " item" : " items");
-            int selected = list.SelectedItems.Count;
+            int selected = list.SelectedItems.Count + localList.SelectedItems.Count;
             if (selected == 0)
             {
                 selectionLabel.Text = "";
@@ -1395,13 +1815,16 @@ namespace DriveFolderSync
             }
             long bytes = 0;
             bool files = false;
-            foreach (ListViewItem item in list.SelectedItems)
+            foreach (FileList side in new FileList[] { list, localList })
             {
-                Row row = item.Tag as Row;
-                if (row != null && !row.IsDir && row.Bytes >= 0)
+                foreach (ListViewItem item in side.SelectedItems)
                 {
-                    bytes += row.Bytes;
-                    files = true;
+                    Row row = item.Tag as Row;
+                    if (row != null && !row.IsDir && row.Bytes >= 0)
+                    {
+                        bytes += row.Bytes;
+                        files = true;
+                    }
                 }
             }
             selectionLabel.Text = selected + " selected" + (files ? "  ·  " + SyncEngine.FormatSize(bytes) : "");
@@ -1417,51 +1840,56 @@ namespace DriveFolderSync
             actionLabel.ForeColor = kind == "cloud" ? Theme.CloudText : Theme.TextMuted;
         }
 
-        void FitColumns()
+        void FitColumns(FileList view)
         {
-            if (sizingColumns || list.Columns.Count == 0) return;
+            if (sizingColumns || view.Columns.Count == 0) return;
             sizingColumns = true;
             try
             {
                 int others = 0;
-                for (int i = 1; i < list.Columns.Count; i++) others += list.Columns[i].Width;
-                int width = Math.Max(Theme.S(220), list.ClientSize.Width - others);
-                if (list.Columns[0].Width != width) list.Columns[0].Width = width;
+                for (int i = 1; i < view.Columns.Count; i++) others += view.Columns[i].Width;
+                int width = Math.Max(Theme.S(140), view.ClientSize.Width - others);
+                if (view.Columns[0].Width != width) view.Columns[0].Width = width;
             }
             finally { sizingColumns = false; }
         }
 
-        void SetHot(int index)
+        void SetHot(FileList view, int index)
         {
-            if (index == hotIndex) return;
+            if (hotList == view && index == hotIndex) return;
+            FileList oldList = hotList;
             int old = hotIndex;
+            hotList = view;
             hotIndex = index;
-            if (old >= 0 && old < list.Items.Count) list.Invalidate(list.Items[old].Bounds);
-            if (index >= 0 && index < list.Items.Count) list.Invalidate(list.Items[index].Bounds);
+            if (oldList != null && old >= 0 && old < oldList.Items.Count) oldList.Invalidate(oldList.Items[old].Bounds);
+            if (view != null && index >= 0 && index < view.Items.Count) view.Invalidate(view.Items[index].Bounds);
         }
 
         void List_MouseMove(object sender, MouseEventArgs e)
         {
-            ListViewItem item = list.GetItemAt(e.X, e.Y);
-            SetHot(item == null ? -1 : item.Index);
+            FileList view = (FileList)sender;
+            ListViewItem item = view.GetItemAt(e.X, e.Y);
+            SetHot(view, item == null ? -1 : item.Index);
         }
 
         void List_DrawItem(object sender, DrawListViewItemEventArgs e)
         {
+            FileList view = (FileList)sender;
             Color back = Theme.Window;
-            if (e.Item.Selected) back = list.Focused ? Theme.RowSelected : Theme.RowSelectedIdle;
-            else if (e.ItemIndex == hotIndex) back = Theme.RowHover;
-            Rectangle row = new Rectangle(e.Bounds.X, e.Bounds.Y, Math.Max(e.Bounds.Width, list.ClientSize.Width - e.Bounds.X), e.Bounds.Height);
+            if (e.Item.Selected) back = view.Focused ? Theme.RowSelected : Theme.RowSelectedIdle;
+            else if (hotList == view && e.ItemIndex == hotIndex) back = Theme.RowHover;
+            Rectangle row = new Rectangle(e.Bounds.X, e.Bounds.Y, Math.Max(e.Bounds.Width, view.ClientSize.Width - e.Bounds.X), e.Bounds.Height);
             using (SolidBrush brush = new SolidBrush(back)) e.Graphics.FillRectangle(brush, row);
         }
 
         void List_DrawSubItem(object sender, DrawListViewSubItemEventArgs e)
         {
+            FileList view = (FileList)sender;
             Row row = e.Item.Tag as Row;
             if (row == null) return;
             Graphics g = e.Graphics;
             Rectangle cell = e.Bounds;
-            if (e.ColumnIndex == 0) cell.Width = list.Columns[0].Width;
+            if (e.ColumnIndex == 0) cell.Width = view.Columns[0].Width;
             int inset = Theme.S(6);
             switch (e.ColumnIndex)
             {
@@ -1502,30 +1930,36 @@ namespace DriveFolderSync
             userSorted = true;
             SortRows();
             list.SetSortArrow(sortColumn, sortAsc);
+            localList.SetSortArrow(sortColumn, sortAsc);
             ShowRows();
+        }
+
+        static int CompareRows(Row a, Row b, int column, bool ascending)
+        {
+            if (a.IsDir != b.IsDir) return a.IsDir ? -1 : 1;
+            int result = 0;
+            if (column == 1) result = string.Compare(a.Status ?? "", b.Status ?? "", StringComparison.OrdinalIgnoreCase);
+            else if (column == 2) result = a.Bytes.CompareTo(b.Bytes);
+            else if (column == 3) result = a.ModifiedAt.CompareTo(b.ModifiedAt);
+            else if (column == 4) result = a.SyncedAt.CompareTo(b.SyncedAt);
+            else result = NaturalCompare(a.Name, b.Name);
+            if (!ascending) result = -result;
+            if (result == 0 && column != 0) result = NaturalCompare(a.Name, b.Name);
+            return result;
         }
 
         void SortRows()
         {
-            rows.Sort(delegate(Row a, Row b)
-            {
-                if (a.IsDir != b.IsDir) return a.IsDir ? -1 : 1;
-                int result = 0;
-                if (sortColumn == 1) result = string.Compare(a.Status ?? "", b.Status ?? "", StringComparison.OrdinalIgnoreCase);
-                else if (sortColumn == 2) result = a.Bytes.CompareTo(b.Bytes);
-                else if (sortColumn == 3) result = a.ModifiedAt.CompareTo(b.ModifiedAt);
-                else if (sortColumn == 4) result = a.SyncedAt.CompareTo(b.SyncedAt);
-                else result = NaturalCompare(a.Name, b.Name);
-                if (!sortAsc) result = -result;
-                if (result == 0 && sortColumn != 0) result = NaturalCompare(a.Name, b.Name);
-                return result;
-            });
+            rows.Sort(delegate(Row a, Row b) { return CompareRows(a, b, sortColumn, sortAsc); });
+            localRows.Sort(delegate(Row a, Row b) { return CompareRows(a, b, sortColumn, sortAsc); });
         }
 
         void List_ItemActivate(object sender, EventArgs e)
         {
-            if (list.SelectedItems.Count == 0) return;
-            Row row = list.SelectedItems[0].Tag as Row;
+            FileList view = sender as FileList;
+            if (view == null) view = ActiveList();
+            if (view.SelectedItems.Count == 0) return;
+            Row row = view.SelectedItems[0].Tag as Row;
             if (row == null) return;
             if (row.IsDir)
             {
@@ -1572,10 +2006,154 @@ namespace DriveFolderSync
             catch { }
         }
 
+        void List_ItemDrag(object sender, ItemDragEventArgs e)
+        {
+            FileList view = (FileList)sender;
+            List<string> paths = new List<string>();
+            foreach (ListViewItem item in view.SelectedItems)
+            {
+                Row row = item.Tag as Row;
+                if (row == null || !IsRealPath(row.FullPath)) continue;
+                if (!File.Exists(row.FullPath) && !Directory.Exists(row.FullPath)) continue;
+                paths.Add(row.FullPath);
+            }
+            if (paths.Count == 0) return;
+            view.DoDragDrop(new DataObject(DataFormats.FileDrop, paths.ToArray()), DragDropEffects.Copy);
+        }
+
+        void List_DragEnter(object sender, DragEventArgs e)
+        {
+            e.Effect = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        }
+
+        void List_DragOver(object sender, DragEventArgs e)
+        {
+            e.Effect = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        }
+
+        void List_DragDrop(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+            string[] sources = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (sources == null || sources.Length == 0) return;
+            FileList target = (FileList)sender;
+            string dest = DropFolder(target, e);
+            if (string.IsNullOrEmpty(dest))
+            {
+                ShowAction("Drop onto a folder on the drive or the local replica.", "warn");
+                return;
+            }
+            StartTransfer(target == localList, dest, sources);
+        }
+
+        string DropFolder(FileList target, DragEventArgs e)
+        {
+            Point point = target.PointToClient(new Point(e.X, e.Y));
+            ListViewItem item = target.GetItemAt(point.X, point.Y);
+            if (item != null)
+            {
+                Row row = item.Tag as Row;
+                if (row != null && row.IsDir && IsRealPath(row.FullPath)) return row.FullPath;
+            }
+            string folder = target == localList ? localKey : driveKey;
+            if (!IsRealPath(folder)) return null;
+            return folder;
+        }
+
+        sealed class DropBatch
+        {
+            public string ProviderId;
+            public string LocalRoot;
+            public List<string> Dirs = new List<string>();
+            public List<string> Files = new List<string>();
+        }
+
+        void StartTransfer(bool toLocal, string destFolder, string[] sources)
+        {
+            if (busy) return;
+            List<Provider> found = Store.DetectProviders();
+            Store.Place destPlace = Store.FindPlace(destFolder, found);
+            if (destPlace == null)
+            {
+                ShowAction("Drop onto the drive or its local replica.", "warn");
+                return;
+            }
+            SetBusy(true, toLocal ? "Copying to the local replica\u2026" : "Copying to the drive\u2026");
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string error = null;
+                int copied = 0;
+                int folders = 0;
+                try
+                {
+                    if (toLocal)
+                    {
+                        string volume = Path.GetPathRoot(destPlace.ReplicaPath);
+                        DriveInfo disk = new DriveInfo(volume);
+                        if (disk.AvailableFreeSpace < SyncEngine.FreeReserve)
+                            throw new IOException("Not enough free disk space to copy onto this PC.");
+                    }
+                    Dictionary<string, DropBatch> batches = new Dictionary<string, DropBatch>(StringComparer.OrdinalIgnoreCase);
+                    foreach (string source in sources)
+                    {
+                        if (string.IsNullOrEmpty(source)) continue;
+                        Store.Place sourcePlace = Store.FindPlace(source, found);
+                        if (sourcePlace == null || sourcePlace.Provider == null) continue;
+                        if (!string.Equals(sourcePlace.Provider.Id, destPlace.Provider.Id, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (string.IsNullOrEmpty(sourcePlace.Relative)) continue;
+                        string leaf = Path.GetFileName(source.TrimEnd('\\'));
+                        if (string.IsNullOrEmpty(leaf)) continue;
+                        string itemRel = string.IsNullOrEmpty(destPlace.Relative) ? leaf : destPlace.Relative + "\\" + leaf;
+                        string destRoot = toLocal ? Store.ReplicaRoot(sourcePlace.Provider) : sourcePlace.Provider.Root;
+                        DropBatch batch;
+                        if (!batches.TryGetValue(sourcePlace.Provider.Id, out batch))
+                        {
+                            batch = new DropBatch();
+                            batch.ProviderId = sourcePlace.Provider.Id;
+                            batch.LocalRoot = Store.ReplicaRoot(sourcePlace.Provider);
+                            batches[sourcePlace.Provider.Id] = batch;
+                        }
+                        int beforeFiles = batch.Files.Count;
+                        int beforeDirs = batch.Dirs.Count;
+                        SyncEngine.CopyInto(source, destRoot, itemRel, batch.Dirs, batch.Files);
+                        copied += batch.Files.Count - beforeFiles;
+                        folders += batch.Dirs.Count - beforeDirs;
+                    }
+                    foreach (DropBatch batch in batches.Values)
+                    {
+                        if (batch.Dirs.Count == 0 && batch.Files.Count == 0) continue;
+                        LinkFolder saved = SyncEngine.RememberSelection(batch.ProviderId, batch.LocalRoot, batch.Dirs, batch.Files);
+                        if (saved == null || !saved.Partial)
+                            throw new InvalidOperationException("This replica is already linked as a whole folder. Stop syncing it before choosing individual files.");
+                    }
+                    if (copied == 0 && folders == 0)
+                        error = "Nothing was copied. Drag a file or folder, not the whole drive.";
+                }
+                catch (Exception ex) { error = ex.Message; }
+                int copiedFiles = copied;
+                int copiedFolders = folders;
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        SetBusy(false, null);
+                        paneDriveRoot = "";
+                        paneLocalRoot = "";
+                        LoadCurrent();
+                        if (error != null) Dialogs.Error(this, "Couldn't copy", error);
+                        else ShowAction("Copied " + copiedFiles + " file(s) and " + copiedFolders + " folder(s). The path matches the drive.", "same");
+                    }));
+                }
+                catch (InvalidOperationException) { }
+            });
+        }
+
         void ListMenu_Opening(object sender, CancelEventArgs e)
         {
             listMenu.Items.Clear();
-            List<Row> selected = SelectedRows();
+            FileList sourceList = listMenu.SourceControl as FileList;
+            if (sourceList == null) sourceList = ActiveList();
+            List<Row> selected = SelectedRows(sourceList);
             if (selected.Count > 0)
             {
                 Row first = selected[0];
@@ -1651,14 +2229,15 @@ namespace DriveFolderSync
 
         void Replica_Click(object sender, EventArgs e)
         {
-            if (list.SelectedItems.Count == 0)
+            FileList sourceList = ActiveList();
+            if (sourceList.SelectedItems.Count == 0)
             {
                 Dialogs.Info(this, "Select what to keep on this PC", "Select the folders and files to keep locally, then choose Local replica. The open folder is not copied on its own.");
                 return;
             }
             List<Provider> found = Store.DetectProviders();
             Dictionary<string, ReplicaChoice> choices = new Dictionary<string, ReplicaChoice>(StringComparer.OrdinalIgnoreCase);
-            foreach (ListViewItem item in list.SelectedItems)
+            foreach (ListViewItem item in sourceList.SelectedItems)
             {
                 Row row = item.Tag as Row;
                 if (row == null) continue;
@@ -1789,9 +2368,10 @@ namespace DriveFolderSync
 
         string SelectedDirectory()
         {
-            if (list.SelectedItems.Count == 1)
+            FileList sourceList = ActiveList();
+            if (sourceList.SelectedItems.Count == 1)
             {
-                Row row = list.SelectedItems[0].Tag as Row;
+                Row row = sourceList.SelectedItems[0].Tag as Row;
                 if (row != null && row.IsDir && !string.IsNullOrEmpty(row.FullPath) && Directory.Exists(row.FullPath))
                     return row.FullPath;
             }
@@ -1895,7 +2475,7 @@ namespace DriveFolderSync
         void About_Click(object sender, EventArgs e)
         {
             Dialogs.Info(this, "Drive Folder Sync " + Store.Version,
-                "Local replica copies only the folders and files you select. Selected files keep the same folder path as the drive.\r\n\r\n"
+                "The drive is on the left and the local replica is on the right. Drag files or folders either way. A dropped folder keeps its contents and the same path.\r\n\r\n"
                 + "Green status: changed on this PC since the last sync.\r\nRed status: changed in the cloud, or changed on both sides.\r\n\r\n"
                 + "Linked folders refresh when you sign in and upload when Windows shuts down.");
         }

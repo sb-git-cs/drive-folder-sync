@@ -180,6 +180,23 @@ namespace DriveFolderSync
                 }
                 if (partials != 1) throw new Exception("selecting the same items created another replica link");
 
+                string dropCloud = Path.Combine(root, "drop-cloud");
+                string dropLocal = Path.Combine(root, "drop-local");
+                Directory.CreateDirectory(Path.Combine(dropCloud, "a"));
+                Directory.CreateDirectory(Path.Combine(dropCloud, "b"));
+                File.WriteAllText(Path.Combine(dropCloud, "a", "one.txt"), "one");
+                File.WriteAllText(Path.Combine(dropCloud, "a", "two.txt"), "two");
+                File.WriteAllText(Path.Combine(dropCloud, "b", "skip.txt"), "skip");
+                List<string> dropDirs = new List<string>();
+                List<string> dropFiles = new List<string>();
+                SyncEngine.CopyInto(Path.Combine(dropCloud, "a", "one.txt"), dropLocal, @"a\one.txt", dropDirs, dropFiles);
+                if (File.ReadAllText(Path.Combine(dropLocal, "a", "one.txt")) != "one") throw new Exception("dropped file did not keep its folder path");
+                if (File.Exists(Path.Combine(dropLocal, "a", "two.txt"))) throw new Exception("a file that was not dropped was copied");
+                dropDirs.Clear();
+                SyncEngine.CopyInto(Path.Combine(dropCloud, "b"), dropLocal, "b", dropDirs, dropFiles);
+                if (File.ReadAllText(Path.Combine(dropLocal, "b", "skip.txt")) != "skip") throw new Exception("dropped folder did not keep its files");
+                if (dropFiles.Count < 2) throw new Exception("dropped folder did not record its files");
+
                 File.WriteAllText(resultPath, "self-test passed");
                 return 0;
             }
