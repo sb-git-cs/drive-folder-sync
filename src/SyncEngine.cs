@@ -971,14 +971,20 @@ namespace DriveFolderSync
             row.Kind = "none";
             row.Text = "Not linked";
             row.LastSynced = "";
-            if (snap == null && local == null && remote == null) return row;
+            if (local == null && remote == null) return row;
             if (snap != null) row.LastSynced = snap.Synced ?? "";
             if (local == null && remote != null) { row.Kind = "cloud"; row.Text = "Only in cloud"; row.LastSynced = ""; return row; }
+            if (local != null && remote == null)
+            {
+                row.Kind = "local";
+                row.Text = snap != null && (!string.IsNullOrEmpty(snap.Rl) || !string.IsNullOrEmpty(snap.Synced))
+                    ? "Missing in the cloud" : (snap != null && snap.Pending ? "Waiting to upload" : "New on this PC");
+                row.LastSynced = "";
+                return row;
+            }
 
             if (snap == null)
             {
-                if (local != null && remote == null) { row.Kind = "local"; row.Text = "New on this PC"; return row; }
-                if (local == null && remote != null) { row.Kind = "cloud"; row.Text = "New in the cloud"; return row; }
                 if (local != null && remote != null && SameContents(local, remote))
                 {
                     row.Kind = "same";
@@ -1009,13 +1015,6 @@ namespace DriveFolderSync
             }
             bool localSame = local != null && SameSig(local.Length, local.MtimeUtc, snap.Ll, snap.Lm);
             bool remoteSame = remote != null && SameSig(remote.Length, remote.MtimeUtc, snap.Rl, snap.Rm);
-            bool localMissing = local == null && !string.IsNullOrEmpty(snap.Ll);
-            bool remoteMissing = remote == null && !string.IsNullOrEmpty(snap.Rl);
-            if (localMissing && remoteMissing) { row.Kind = "same"; row.Text = "In sync"; return row; }
-            if (localMissing) { row.Kind = "cloud"; row.Text = "Missing on this PC"; return row; }
-            if (remoteMissing) { row.Kind = "local"; row.Text = "Missing in the cloud"; return row; }
-            if (local != null && remote == null) { row.Kind = "local"; row.Text = localSame ? "In sync" : "Changed on this PC"; if (localSame) row.Kind = "same"; return row; }
-            if (local == null && remote != null) { row.Kind = "cloud"; row.Text = remoteSame ? "In sync" : "Changed in the cloud"; if (remoteSame) row.Kind = "same"; return row; }
             if (localSame && remoteSame) { row.Kind = "same"; row.Text = string.IsNullOrEmpty(row.LastSynced) ? "Contents match" : "In sync"; return row; }
             if (!localSame && remoteSame) { row.Kind = "local"; row.Text = "Changed on this PC"; return row; }
             if (localSame && !remoteSame) { row.Kind = "cloud"; row.Text = "Changed in the cloud"; return row; }

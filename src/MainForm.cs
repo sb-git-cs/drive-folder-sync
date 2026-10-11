@@ -1229,6 +1229,11 @@ namespace DriveFolderSync
                         page.Info.Badge = "Folder unavailable";
                         page.Info.BadgeKind = "cloud";
                     }
+                    else if (!Directory.Exists(place.CloudPath))
+                    {
+                        page.Info.Badge = "Missing in the cloud";
+                        page.Info.BadgeKind = "cloud";
+                    }
                     else if (link.LastErrors > 0)
                     {
                         page.Info.Badge = "Last sync had " + link.LastErrors + " error(s)";
@@ -1275,7 +1280,7 @@ namespace DriveFolderSync
                     row.Kind = "none";
                     if (!otherExists)
                     {
-                        row.Status = folderIsLocal ? "Only on this PC" : "Only in cloud";
+                        row.Status = folderIsLocal && link != null ? "Missing in the cloud" : (folderIsLocal ? "Only on this PC" : "Only in cloud");
                         row.Kind = folderIsLocal ? "local" : "cloud";
                     }
                     if (link != null && otherExists) SetSynced(row, link.LastSync);
@@ -1426,11 +1431,12 @@ namespace DriveFolderSync
                     row.IsDir = true;
                     row.FullPath = folder.Local;
                     row.NavigateKey = folder.Local;
-                    SetSynced(row, folder.LastSync);
                     string remote = Store.ResolveRemote(folder, found);
                     if (string.IsNullOrEmpty(remote)) { row.Status = "Drive missing"; row.Kind = "warn"; }
+                    else if (!Directory.Exists(remote)) { row.Status = "Missing in the cloud"; row.Kind = "local"; }
+                    else if (!Directory.Exists(folder.Local)) { row.Status = "Local folder missing"; row.Kind = "cloud"; }
                     else if (folder.LastErrors > 0) { row.Status = "Linked  ·  " + folder.LastErrors + (folder.LastErrors == 1 ? " error" : " errors"); row.Kind = "cloud"; }
-                    else { row.Status = "Linked"; row.Kind = "same"; }
+                    else { row.Status = "Linked"; row.Kind = "same"; SetSynced(row, folder.LastSync); }
                     row.Modified = "";
                     row.Size = "";
                     built.Add(row);
@@ -1467,7 +1473,12 @@ namespace DriveFolderSync
                 string when = SyncEngine.FormatWhen(link.LastSync);
                 info.Badge = string.IsNullOrEmpty(when) ? "Linked, not synced yet" : "Synced " + when;
                 info.BadgeKind = "info";
-                if (link.LastErrors > 0)
+                if (string.IsNullOrEmpty(remoteRoot) || !Directory.Exists(remoteRoot))
+                {
+                    info.Badge = "Missing in the cloud";
+                    info.BadgeKind = "cloud";
+                }
+                else if (link.LastErrors > 0)
                 {
                     info.Badge = info.Badge + "  ·  " + link.LastErrors + (link.LastErrors == 1 ? " error" : " errors");
                     info.BadgeKind = "cloud";
@@ -1501,7 +1512,13 @@ namespace DriveFolderSync
                         if (kind == "local") row.Status = "Has local changes";
                         else if (kind == "cloud") row.Status = "Has cloud changes";
                         else row.Status = "Folder";
-                        SetSynced(row, link.LastSync);
+                        string otherPath = string.IsNullOrEmpty(otherRoot) ? null : Path.Combine(otherRoot, rel);
+                        if (!string.IsNullOrEmpty(otherPath) && Directory.Exists(otherPath)) SetSynced(row, link.LastSync);
+                        else
+                        {
+                            row.Kind = viewingLocal ? "local" : "cloud";
+                            row.Status = viewingLocal ? "Missing in the cloud" : "Only in cloud";
+                        }
                     }
                     else
                     {
@@ -1531,7 +1548,7 @@ namespace DriveFolderSync
                         SyncEngine.RowStatus classified = SyncEngine.Classify(localRec, remoteRec, snap);
                         row.Kind = classified.Kind;
                         row.Status = classified.Text;
-                        SetSynced(row, string.IsNullOrEmpty(classified.LastSynced) ? link.LastSync : classified.LastSynced);
+                        SetSynced(row, classified.LastSynced);
                     }
                 }
                 built.Add(row);
@@ -1576,7 +1593,17 @@ namespace DriveFolderSync
             {
                 info.Badge = string.IsNullOrEmpty(when) ? "Linked, not synced yet" : "Synced " + when;
                 info.BadgeKind = "info";
-                if (link.LastErrors > 0)
+                if (!place.Provider.IsOnline || !Directory.Exists(place.ReplicaPath))
+                {
+                    info.Badge = "Folder unavailable";
+                    info.BadgeKind = "cloud";
+                }
+                else if (!Directory.Exists(place.CloudPath))
+                {
+                    info.Badge = "Missing in the cloud";
+                    info.BadgeKind = "cloud";
+                }
+                else if (link.LastErrors > 0)
                 {
                     info.Badge = info.Badge + "  ·  " + link.LastErrors + (link.LastErrors == 1 ? " error" : " errors");
                     info.BadgeKind = "cloud";
@@ -1614,14 +1641,14 @@ namespace DriveFolderSync
                     row.Kind = "none";
                     if (onCloud && !onLocal) { row.Status = "Only in cloud"; row.Kind = "cloud"; }
                     else if (onLocal && !onCloud) { row.Status = "Only on this PC"; row.Kind = "local"; }
-                    if (state != null)
+                    if (state != null && onCloud && onLocal)
                     {
                         string rel = string.IsNullOrEmpty(relBase) ? child.Name : relBase + "\\" + child.Name;
                         string kind = FolderKind(state, rel);
                         if (kind == "local") { row.Status = "Has local changes"; row.Kind = "local"; }
                         else if (kind == "cloud") { row.Status = "Has cloud changes"; row.Kind = "cloud"; }
                     }
-                    if (link != null) SetSynced(row, link.LastSync);
+                    if (link != null && onCloud && onLocal) SetSynced(row, link.LastSync);
                 }
                 else if (link != null && state != null)
                 {
@@ -1632,7 +1659,7 @@ namespace DriveFolderSync
                     SyncEngine.RowStatus classified = SyncEngine.Classify(localRec, remoteRec, snap);
                     row.Kind = classified.Kind;
                     row.Status = classified.Text;
-                    SetSynced(row, string.IsNullOrEmpty(classified.LastSynced) ? link.LastSync : classified.LastSynced);
+                    SetSynced(row, classified.LastSynced);
                 }
                 else if (onCloud && !onLocal)
                 {
@@ -1815,6 +1842,8 @@ namespace DriveFolderSync
                 if (!localSide && loadError != null) blank.Set(Glyphs.Warning, "This folder isn't available", loadError);
                 else if (query.Length > 0) blank.Set(Glyphs.Search, "No items match \u201C" + query + "\u201D", "Check the spelling, or clear the search to see everything in this folder.");
                 else if (!localSide && current == "vfs:linked") blank.Set(Glyphs.Link, "No linked folders yet", "Open a folder on a drive, then choose Link folder. Linked folders upload when Windows shuts down and refresh when you sign in.");
+                else if (!localSide && IsRealPath(driveKey) && !Directory.Exists(driveKey))
+                    blank.Set(Glyphs.Warning, "Cloud folder isn't available", "Check the drive connection. If this folder was moved or trashed, restore it and refresh.");
                 else if (localSide && !string.IsNullOrEmpty(localKey) && localKey != "vfs:replicas" && !Directory.Exists(localKey))
                     blank.Set(Glyphs.SaveLocal, "Nothing copied here yet", "Drag folders or files from the drive. They keep the same path.");
                 else if (localSide && string.IsNullOrEmpty(localKey))

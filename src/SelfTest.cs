@@ -69,6 +69,22 @@ namespace DriveFolderSync
                 if (File.ReadAllText(only) != "local-edited") throw new Exception("startup refresh did not restore the retained cloud file");
 
                 File.Delete(cloud);
+                FileRecord missingLocal = new FileRecord();
+                missingLocal.Full = Path.Combine(local, "from-drive.txt");
+                missingLocal.Length = new FileInfo(missingLocal.Full).Length;
+                missingLocal.MtimeUtc = File.GetLastWriteTimeUtc(missingLocal.Full);
+                Snap missingSnap = Store.ReadState(state)["from-drive.txt"];
+                if (string.IsNullOrEmpty(missingSnap.Synced)) throw new Exception("missing cloud regression has no prior sync time");
+                for (int variant = 0; variant < 4; variant++)
+                {
+                    missingSnap.Pending = variant == 1;
+                    missingSnap.Hold = variant == 2;
+                    if (variant == 3) { missingSnap.Rl = ""; missingSnap.Synced = ""; }
+                    SyncEngine.RowStatus missingStatus = SyncEngine.Classify(missingLocal, null, missingSnap);
+                    if (missingStatus.Kind == "same" || missingStatus.Text == "In sync" || missingStatus.LastSynced != "")
+                        throw new Exception("missing cloud copy was shown as synced, variant " + variant);
+                }
+                if (SyncEngine.Classify(null, null, missingSnap).Kind == "same") throw new Exception("absent copies were shown as synced");
                 pull = SyncEngine.SyncFolder("Pull", local, remote, state, true);
                 if (File.Exists(Path.Combine(local, "from-drive.txt"))) throw new Exception("cloud delete was not applied locally");
 

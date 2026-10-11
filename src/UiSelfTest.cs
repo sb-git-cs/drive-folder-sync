@@ -86,7 +86,14 @@ namespace DriveFolderSync
                     }
                     if (!cloudOnly) throw new Exception("cloud-only file was not highlighted in the explorer");
                     FlowLayoutPanel tabs = (FlowLayoutPanel)Field(form, "driveTabs");
-                    if (!tabs.AutoScroll || tabs.WrapContents || tabs.Controls.Count < 3) throw new Exception("horizontal drive tabs were not available");
+                    if (!tabs.AutoScroll || tabs.WrapContents || tabs.Controls.Count != Store.DetectProviders().Count)
+                        throw new Exception("horizontal bar does not contain exactly the cloud drives");
+                    foreach (Button tab in tabs.Controls)
+                    {
+                        bool isDrive = false;
+                        foreach (Provider provider in Store.DetectProviders()) if ((string)tab.Tag == provider.Id) isDrive = true;
+                        if (!isDrive) throw new Exception("non-cloud tab found: " + tab.Text);
+                    }
                     ComboBox selectedPair = (ComboBox)Field(form, "pairPicker");
                     if (selectedPair.SelectedIndex != 1 || string.IsNullOrEmpty(selectedPair.Text))
                         throw new Exception("folder selector has no selected text: index=" + selectedPair.SelectedIndex);
@@ -114,6 +121,40 @@ namespace DriveFolderSync
                         Capture(dialog, Path.Combine(output, "attach-folder.png"));
                         dialog.Close();
                     }
+                    string trash = Path.Combine(drive.Root, "Trash simulation");
+                    Directory.CreateDirectory(trash);
+                    Directory.Move(Path.Combine(cloud, "Notes"), Path.Combine(trash, "Notes"));
+                    File.Move(Path.Combine(cloud, "Brief.txt"), Path.Combine(trash, "Brief.txt"));
+                    Navigate(form, local);
+                    bool missingFolder = false, missingFile = false;
+                    foreach (ListViewItem item in right.Items)
+                    {
+                        Row row = item.Tag as Row;
+                        bool missing = row.Status == "Missing in the cloud" && row.Kind == "local" && string.IsNullOrEmpty(row.LastSynced);
+                        if (row.Name == "Notes") missingFolder = missing;
+                        if (row.Name == "Brief.txt") missingFile = missing;
+                    }
+                    if (!missingFolder || !missingFile) throw new Exception("trashed cloud children retained synced status");
+                    Navigate(form, Path.Combine(local, "Notes"));
+                    if (((ViewInfo)Field(form, "view")).Badge != "Missing in the cloud") throw new Exception("trashed cloud subfolder retained synced badge");
+                    Directory.Move(cloud, Path.Combine(trash, "project-documents"));
+                    Navigate(form, local);
+                    if (left.Items.Count != 0 || ((ViewInfo)Field(form, "view")).Badge != "Missing in the cloud")
+                        throw new Exception("trashed cloud root retained synced badge");
+                    if ((string)Field(Field(form, "empty"), "title") != "Cloud folder isn't available")
+                        throw new Exception("missing cloud pane was shown as an empty folder");
+                    ViewInfo legacyInfo = new ViewInfo();
+                    List<Row> legacyRows = (List<Row>)form.GetType().GetMethod("BuildRows", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { local, legacyInfo });
+                    if (legacyInfo.Badge != "Missing in the cloud") throw new Exception("legacy folder badge retained synced status");
+                    foreach (Row row in legacyRows)
+                        if (row.Kind == "same" || !string.IsNullOrEmpty(row.LastSynced)) throw new Exception("legacy folder view restored a stale sync timestamp");
+                    Capture(form, Path.Combine(output, "missing-cloud.png"));
+                    Navigate(form, "vfs:linked");
+                    Row attachment = left.Items[0].Tag as Row;
+                    if (attachment.Status != "Missing in the cloud" || attachment.Kind == "same" || !string.IsNullOrEmpty(attachment.LastSynced))
+                        throw new Exception("attached-folder overview showed a trashed cloud folder as synced");
+                    if (!File.Exists(Path.Combine(local, "Brief.txt"))) throw new Exception("browsing trashed cloud folder changed local files");
                     form.Close();
                 }
                 File.WriteAllText(Path.Combine(output, "result.txt"), "UI self-test passed");

@@ -28,6 +28,7 @@ The local folder stays in its original location. Each drive can have several fol
 - **At Windows sign-in:** available attached folders refresh from the cloud. Disconnected drives retry for up to eight minutes without blocking other drives.
 - **At shutdown or sign-out:** local changes back up to the cloud folder.
 - **After local deletion:** the cloud backup stays. The cloud pane highlights it as **Only in cloud**. The next sign-in refresh downloads it again.
+- **After cloud trash or a move:** once the cloud desktop client removes the original path, browsing or pressing **F5** shows **Missing in the cloud** without a synced timestamp. Restore the folder in the cloud and refresh to see it again.
 - **After cloud deletion:** the existing sync rules still remove an unchanged tracked local copy. Local edits and pending uploads are protected.
 - **When both sides change:** conflict handling preserves versions. Unreadable scans stop sync rather than treating files as deleted.
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.1
+
+- The horizontal bar contains only cloud drives; Overview and Attached folders remain accessible through navigation.
+- Files and folders missing from their paired cloud path, including items moved to trash, no longer display a synced timestamp or an In sync status. Missing cloud roots and subfolders show a warning instead of a stale Synced badge.
+- The cloud pane explains when a folder is unavailable instead of presenting it as empty. Detection uses the provider's mounted folder after its desktop client reflects the change.
+- Regression tests cover removed cloud files, subfolders, entire attached folders, stale pending states, attachment overview and cloud-only tabs.
+
 ## 1.4.0
 
 Attach local folders from any drive to existing or new cloud destinations. Horizontal drive tabs and a folder-pair selector make the cloud and local paths explicit.

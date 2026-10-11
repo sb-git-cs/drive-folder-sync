@@ -49,9 +49,7 @@ namespace DriveFolderSync
             tabSignature = signature;
             driveTabs.SuspendLayout();
             while (driveTabs.Controls.Count > 0) driveTabs.Controls[0].Dispose();
-            AddDriveTab("Overview", "", "vfs:pc");
             foreach (Provider provider in providers) AddDriveTab(provider.Title, provider.Id, provider.Root);
-            AddDriveTab("Attached folders", "linked", "vfs:linked");
             driveTabs.ResumeLayout();
             SelectDriveTab();
         }
@@ -79,7 +77,7 @@ namespace DriveFolderSync
 
         void SelectDriveTab()
         {
-            string selected = current == "vfs:linked" ? "linked" : activeProviderId;
+            string selected = activeProviderId;
             foreach (Button tab in driveTabs.Controls)
             {
                 bool active = (string)tab.Tag == selected;
