@@ -1,3 +1,9 @@
+# Review — 1.5.2
+
+## Bug fix in 1.5.2
+
+- Dragging a folder that contained a link between the panes failed with "Copy cannot follow symbolic links or junctions". CopyInto now skips links, both in the source and at the destination, and returns the count, which the drop status reports. Covered by /selftest: a junction in a dropped folder is skipped while its siblings copy, and a drop onto a destination junction doesn't write into its target.
+
 # Review — 1.5.1
 
 ## Bug fixes in 1.5.1

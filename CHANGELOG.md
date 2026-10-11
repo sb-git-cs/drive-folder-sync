@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.2
+
+- Dragging a folder that contains a symbolic link or junction between the panes now copies everything else instead of refusing. The link is skipped and nothing is copied through it. Nothing is written through a link that already exists at the destination either. The status bar shows how many linked items were skipped.
+
 ## 1.5.1
 
 - A symbolic link or junction inside an attached folder no longer stops the backup with "Sync cannot follow symbolic links or junctions". The link is skipped and everything else is backed up. Nothing is copied into or through a link in either direction, and the sync summary shows how many linked folders were skipped.

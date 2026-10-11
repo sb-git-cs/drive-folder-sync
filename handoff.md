@@ -1,23 +1,22 @@
 # Team handoff
 
 ## Objective
-Version 1.5.1 fixes two bugs. A junction or symbolic link inside an attached folder aborted the initial backup; it is now skipped. File lists had a horizontal scrollbar; columns now fit the pane.
+Version 1.5.2: dragging a folder that contains a link between the panes now skips the link instead of refusing the copy. 1.5.1 (link-safe sync, list columns that fit the pane) is released.
 
 ## Baseline
-main at 0ed5167. Release v1.5.0 published.
+main at 11d8c5d. Release v1.5.1 published.
 
 ## Assignments
 | Agent | Assignment | Status |
 | --- | --- | --- |
-| Claude | Fix link handling and list column fitting for 1.5.1 | Complete; awaiting the owner's go-ahead to commit and release |
+| Claude | Skip links in drag-and-drop copies for 1.5.2 | Complete; committed to main for release |
 
 ## Validation and delivery
-Local build, `/selftest` and `/uitest` pass. Owner rule: sync never deletes local files, even when the cloud deletes them. New tests cover junction skipping in both directions and the absence of a horizontal list scrollbar at the default and minimum window sizes. See review.md.
+Local build, `/selftest` and `/uitest` pass. Owner rule: sync never deletes local files, even when the cloud deletes them. New tests cover junction skipping in sync and drag-and-drop copies and the absence of a horizontal list scrollbar at the default and minimum window sizes. See review.md.
 
 ## Next steps
-- Commit to main to publish 1.5.1.
+- Confirm the 1.5.2 release workflow published the installer.
 - Follow-ups not done:
   - viewing large pending folders compares file contents on every browse;
   - dark mode is unsupported;
-  - the README doesn't document the auto-link watcher for Desktop/Documents/Downloads;
-  - drag-and-drop copy (CopyInto) still refuses folders that contain a link.
+  - the README doesn't document the auto-link watcher for Desktop/Documents/Downloads.

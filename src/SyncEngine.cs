@@ -344,25 +344,40 @@ namespace DriveFolderSync
             return made;
         }
 
-        public static void CopyInto(string source, string destRoot, string relative, List<string> dirs, List<string> files)
+        static bool IsLinkAt(string path)
         {
-            if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(destRoot) || string.IsNullOrEmpty(relative)) return;
+            string target = LongPath(path);
+            if (!File.Exists(target) && !Directory.Exists(target)) return false;
+            return IsRedirect(path, File.GetAttributes(target));
+        }
+
+        // Copies a dropped file or folder and returns how many symbolic links or junctions were
+        // skipped. A link is never followed in the source or written through in the destination.
+        public static int CopyInto(string source, string destRoot, string relative, List<string> dirs, List<string> files)
+        {
+            if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(destRoot) || string.IsNullOrEmpty(relative)) return 0;
             if (dirs == null) dirs = new List<string>();
             if (files == null) files = new List<string>();
             Directory.CreateDirectory(destRoot);
             string dest = Path.GetFullPath(Path.Combine(destRoot, relative));
             if (!Store.IsUnder(dest, destRoot)) throw new IOException("The copy must stay inside the selected folder.");
+            if (IsLinkAt(source) || IsLinkAt(dest))
+            {
+                Store.Log("copy skipped a symbolic link or junction: " + source);
+                return 1;
+            }
             RejectReparsePath(source);
             RejectReparsePath(dest);
             if (File.Exists(source))
             {
-                if (string.Equals(Store.Norm(source), Store.Norm(dest), StringComparison.OrdinalIgnoreCase)) return;
+                if (string.Equals(Store.Norm(source), Store.Norm(dest), StringComparison.OrdinalIgnoreCase)) return 0;
                 CopyFile(source, dest);
                 files.Add(relative);
-                return;
+                return 0;
             }
-            if (!Directory.Exists(source)) return;
-            if (Store.IsUnder(dest, source)) return;
+            if (!Directory.Exists(source)) return 0;
+            if (Store.IsUnder(dest, source)) return 0;
+            int skipped = 0;
             dirs.Add(relative);
             Directory.CreateDirectory(dest);
             Stack<string> pending = new Stack<string>();
@@ -384,17 +399,23 @@ namespace DriveFolderSync
                 {
                     bool isDir = (child.Attributes & FileAttributes.Directory) != 0;
                     if (SkipName(child.Name, isDir)) continue;
-                    if (IsRedirect(child.FullName, child.Attributes)) throw new IOException("Copy cannot follow symbolic links or junctions: " + child.FullName);
                     string childSub = string.IsNullOrEmpty(sub) ? child.Name : sub + "\\" + child.Name;
+                    string childRel = relative + "\\" + childSub;
+                    if (IsRedirect(child.FullName, child.Attributes) || IsLinkAt(Path.Combine(destRoot, childRel)))
+                    {
+                        Store.Log("copy skipped a symbolic link or junction: " + child.FullName);
+                        skipped++;
+                        continue;
+                    }
                     if (isDir) pending.Push(childSub);
                     else
                     {
-                        string childRel = relative + "\\" + childSub;
                         CopyFile(child.FullName, Path.Combine(destRoot, childRel));
                         files.Add(childRel);
                     }
                 }
             }
+            return skipped;
         }
 
         public static void MaterializeSelection(string cloudRoot, string localRoot, IList<string> dirs, IList<string> files)

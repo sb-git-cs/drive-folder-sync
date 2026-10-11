@@ -399,6 +399,15 @@ namespace DriveFolderSync
                     linked = SyncEngine.SyncFolder("Pull", existingLocal, existingCloud, failedState, true);
                     if (linked.Links != 1 || File.Exists(Path.Combine(junctionTarget, "into-link.txt")))
                         throw new Exception("refresh wrote through a junction outside its paired folder");
+                    string dropCopy = Path.Combine(root, "drop-with-link");
+                    List<string> linkDirs = new List<string>();
+                    List<string> linkFiles = new List<string>();
+                    if (SyncEngine.CopyInto(existingLocal, dropCopy, "copied", linkDirs, linkFiles) != 1) throw new Exception("drop did not report the skipped junction");
+                    if (!File.Exists(Path.Combine(dropCopy, "copied", "beside-link.txt"))) throw new Exception("a junction stopped the rest of the drop");
+                    if (Directory.Exists(Path.Combine(dropCopy, "copied", "redirected"))) throw new Exception("drop followed a junction");
+                    if (SyncEngine.CopyInto(Path.Combine(existingCloud, "redirected"), existingLocal, "redirected", linkDirs, linkFiles) != 1
+                        || File.Exists(Path.Combine(junctionTarget, "into-link.txt")))
+                        throw new Exception("drop wrote through a junction in the destination");
                     Directory.Delete(Path.Combine(existingCloud, "redirected"), true);
                     File.Delete(Path.Combine(existingCloud, "beside-link.txt"));
                 }

@@ -320,6 +320,7 @@ namespace DriveFolderSync
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string error = null;
+                int skipped = 0;
                 try
                 {
                     using (SyncEngine.LockState(180))
@@ -334,7 +335,7 @@ namespace DriveFolderSync
                             if (!Store.IsUnder(source, sourceRoot) || Store.Norm(source) == Store.Norm(sourceRoot))
                                 throw new IOException("Drag files or subfolders from the other side of this folder pair.");
                             string rel = Store.Relative(Path.Combine(destination, Path.GetFileName(source)), targetRoot);
-                            SyncEngine.CopyInto(source, targetRoot, rel, dirs, files);
+                            skipped += SyncEngine.CopyInto(source, targetRoot, rel, dirs, files);
                         }
                         if (link.Partial) SyncEngine.RememberSelection(link.ProviderId, link.Local, dirs, files);
                     }
@@ -347,6 +348,7 @@ namespace DriveFolderSync
                         SetBusy(false, null);
                         RefreshAll();
                         if (error != null) Dialogs.Error(this, "Couldn't copy", error);
+                        else if (skipped > 0) ShowAction("Copied to the selected folder pair  ·  " + Plural(skipped, "linked item") + " skipped", "warn");
                         else ShowAction("Copied to the selected folder pair", "same");
                     }));
                 }
