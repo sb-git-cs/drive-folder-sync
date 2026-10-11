@@ -81,7 +81,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 
 The installer is written to `dist\DriveFolderSyncSetup.exe`. Run `DriveFolderSyncSetup.exe /selftest` to check the sync rules without touching your drives.
 
-Every push and pull request is built and self-tested by [GitHub Actions](.github/workflows/build.yml). Pushing a tag such as `v1.3.1` publishes a release with the installer attached, using the tag message as the release notes.
+Every push and pull request is built and self-tested by [GitHub Actions](.github/workflows/build.yml). When a push to `main` carries a new version, the workflow publishes that release with the installer attached and the matching [CHANGELOG](CHANGELOG.md) section as its notes.
 
 <details>
 <summary>Regenerating the README screenshots</summary>
