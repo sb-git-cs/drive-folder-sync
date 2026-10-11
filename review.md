@@ -1,3 +1,9 @@
+# Review — 1.5.3
+
+## Bug fix in 1.5.3
+
+- The update download always timed out on the owner's network. release-assets.githubusercontent.com resolves to four addresses, and the first one (185.199.109.133) refuses TCP connections. HttpWebRequest spends about 21 s on that address before trying the next, but the request timeout was 15 s. curl succeeded in under 1 s because it falls back faster. The request timeout is now 90 s. The 15 s per-read timeout and the 3-minute download limit still bound a stalled transfer. Verified with .NET on the affected network: the download completes in about 21 s with the new timeout and times out every time with the old one.
+
 # Review — 1.5.2
 
 ## Bug fix in 1.5.2

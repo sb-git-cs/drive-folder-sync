@@ -59,7 +59,9 @@ namespace DriveFolderSync
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.UserAgent = "DriveFolderSync/" + Store.Version;
             request.Accept = "application/vnd.github+json";
-            request.Timeout = 15000;
+            // GitHub hosts resolve to several addresses. When the first one is unreachable, Windows
+            // takes about 21 seconds to give up on it before the next one is tried.
+            request.Timeout = 90000;
             request.ReadWriteTimeout = 15000;
             return request;
         }
@@ -144,7 +146,9 @@ namespace DriveFolderSync
                 catch (Exception ex)
                 {
                     Store.Log("update deferred: " + ex.Message);
-                    report("Update deferred; the current app remains available. " + ex.Message);
+                    if (ex is WebException)
+                        report("Couldn't reach GitHub to download the update. The current app remains available; try again later.");
+                    else report("Update deferred; the current app remains available. " + ex.Message);
                     return false;
                 }
                 finally { mutex.ReleaseMutex(); }

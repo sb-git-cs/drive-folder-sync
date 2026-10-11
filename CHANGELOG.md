@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.3
+
+- Automatic updates no longer fail with "Update deferred … The operation has timed out" on networks where one of GitHub's download servers is unreachable. The updater now waits long enough for Windows to try the next server. Copies older than 1.5.3 may need this version installed manually once.
+- A failed download now says that GitHub couldn't be reached instead of showing the raw network error.
+
 ## 1.5.2
 
 - Dragging a folder that contains a symbolic link or junction between the panes now copies everything else instead of refusing. The link is skipped and nothing is copied through it. Nothing is written through a link that already exists at the destination either. The status bar shows how many linked items were skipped.
