@@ -5,3 +5,4 @@ dist/
 build.rsp
 csc-args.txt
 app.ico
+docs/screenshots/src/*.html
