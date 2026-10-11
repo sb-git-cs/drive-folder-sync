@@ -7,6 +7,7 @@
 **A two-pane File Explorer for your cloud drives.**<br>
 Browse Google Drive, OneDrive, Dropbox, or any cloud folder on the left, and keep a local replica of just the parts you need on the right.
 
+[![Build](https://github.com/sb-git-cs/drive-folder-sync/actions/workflows/build.yml/badge.svg)](https://github.com/sb-git-cs/drive-folder-sync/actions/workflows/build.yml)
 [![Download](https://img.shields.io/github/v/release/sb-git-cs/drive-folder-sync?label=download&color=0067c0)](https://github.com/sb-git-cs/drive-folder-sync/releases/latest)
 ![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0067c0?logo=windows&logoColor=white)
 ![.NET Framework 4.8](https://img.shields.io/badge/.NET%20Framework-4.8-512bd4)
@@ -79,6 +80,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
 The installer is written to `dist\DriveFolderSyncSetup.exe`. Run `DriveFolderSyncSetup.exe /selftest` to check the sync rules without touching your drives.
+
+Every push and pull request is built and self-tested by [GitHub Actions](.github/workflows/build.yml). Pushing a tag such as `v1.3.1` publishes a release with the installer attached, using the tag message as the release notes.
 
 <details>
 <summary>Regenerating the README screenshots</summary>

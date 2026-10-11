@@ -1,0 +1,45 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build installer
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+
+      - name: Self-test
+        run: |
+          $result = Join-Path $env:RUNNER_TEMP 'selftest.txt'
+          $p = Start-Process dist\DriveFolderSyncSetup.exe -ArgumentList '/selftest', $result -Wait -PassThru
+          if (Test-Path $result) { Get-Content $result }
+          if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DriveFolderSyncSetup
+          path: dist/DriveFolderSyncSetup.exe
+
+      # Tag v1.2.3 publishes release 1.2.3. The annotated tag message becomes the release notes.
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $tag.Substring(1)
+          if (-not (Select-String -Path src\Store.cs -SimpleMatch "Version = `"$version`"" -Quiet)) {
+            throw "Tag $tag does not match Store.Version"
+          }
+          git fetch --force --depth=1 origin "+refs/tags/${tag}:refs/tags/${tag}"
+          git tag -l $tag --format='%(contents)' | Out-File -Encoding utf8 notes.md
+          gh release create $tag dist\DriveFolderSyncSetup.exe --title "Drive Folder Sync $version" --notes-file notes.md --verify-tag
