@@ -72,7 +72,7 @@ namespace DriveFolderSync
 
     public class Store
     {
-        public const string Version = "1.0.0";
+        public const string Version = "1.1.0";
         static readonly object LogGate = new object();
         static string rootOverride;
         static string logOverride;
@@ -144,6 +144,76 @@ namespace DriveFolderSync
             if (string.IsNullOrEmpty(root))
                 root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Work Drive");
             return root;
+        }
+
+        public static string SafeName(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "drive";
+            foreach (char bad in Path.GetInvalidFileNameChars()) value = value.Replace(bad, '-');
+            value = value.Trim();
+            return string.IsNullOrEmpty(value) ? "drive" : value;
+        }
+
+        public static string ReplicaLeaf(Provider provider)
+        {
+            string raw = provider == null ? "" : (provider.Detail ?? "");
+            bool path = raw.IndexOf('\\') >= 0 || (raw.Length >= 2 && raw[1] == ':');
+            if (string.IsNullOrEmpty(raw) || path)
+                raw = provider == null ? "" : (provider.Name ?? "");
+            int space = raw.IndexOf(' ');
+            if (space > 0) raw = raw.Substring(0, space);
+            return SafeName(raw);
+        }
+
+        public static string ReplicaRoot(Provider provider)
+        {
+            return Path.Combine(LocalRoot(), ReplicaLeaf(provider));
+        }
+
+        public static string ReplicaPath(Provider provider, string relative)
+        {
+            string root = ReplicaRoot(provider);
+            if (string.IsNullOrEmpty(relative)) return root;
+            return Path.Combine(root, relative);
+        }
+
+        public class Place
+        {
+            public Provider Provider;
+            public string Relative;
+            public bool ViewingReplica;
+            public string CloudPath;
+            public string ReplicaPath;
+        }
+
+        public static Place FindPlace(string path, List<Provider> providers)
+        {
+            if (string.IsNullOrEmpty(path) || providers == null) return null;
+            foreach (Provider provider in providers)
+            {
+                if (provider == null || string.IsNullOrEmpty(provider.Root)) continue;
+                if (!IsUnder(path, provider.Root)) continue;
+                return MakePlace(provider, Relative(path, provider.Root) ?? "", false);
+            }
+            foreach (Provider provider in providers)
+            {
+                if (provider == null) continue;
+                string replica = ReplicaRoot(provider);
+                if (!IsUnder(path, replica)) continue;
+                return MakePlace(provider, Relative(path, replica) ?? "", true);
+            }
+            return null;
+        }
+
+        static Place MakePlace(Provider provider, string relative, bool viewingReplica)
+        {
+            Place place = new Place();
+            place.Provider = provider;
+            place.Relative = relative ?? "";
+            place.ViewingReplica = viewingReplica;
+            place.CloudPath = string.IsNullOrEmpty(place.Relative) ? provider.Root : Path.Combine(provider.Root, place.Relative);
+            place.ReplicaPath = ReplicaPath(provider, place.Relative);
+            return place;
         }
 
         public static List<string> WatchRoots()

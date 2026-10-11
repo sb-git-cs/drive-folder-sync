@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -14,6 +15,15 @@ namespace DriveFolderSync
         public string Key;
         public string FullPath;
         public bool Loaded;
+    }
+
+    class MirrorChild
+    {
+        public string Name;
+        public bool CloudIsDir;
+        public bool LocalIsDir;
+        public FileInfo CloudFile;
+        public FileInfo LocalFile;
     }
 
     public class Row
@@ -104,6 +114,7 @@ namespace DriveFolderSync
 
             MenuStrip menu = new MenuStrip();
             ToolStripMenuItem file = new ToolStripMenuItem("File");
+            file.DropDownItems.Add("Create local replica", null, new EventHandler(Replica_Click));
             file.DropDownItems.Add("Link this folder", null, new EventHandler(Link_Click));
             file.DropDownItems.Add("Stop syncing this folder", null, new EventHandler(Unlink_Click));
             file.DropDownItems.Add(new ToolStripSeparator());
@@ -144,6 +155,7 @@ namespace DriveFolderSync
             bar.Items.Add(new ToolStripSeparator());
             bar.Items.Add(new ToolStripButton("Refresh from cloud", null, new EventHandler(delegate { RunSync("Pull", true); })));
             bar.Items.Add(new ToolStripButton("Upload to cloud", null, new EventHandler(delegate { RunSync("Push", true); })));
+            bar.Items.Add(new ToolStripButton("Local replica", null, new EventHandler(Replica_Click)));
             bar.Items.Add(new ToolStripButton("Link folder", null, new EventHandler(Link_Click)));
             bar.Items.Add(new ToolStripButton("Add drive", null, new EventHandler(AddDrive_Click)));
 
@@ -253,6 +265,13 @@ namespace DriveFolderSync
                 TreeNode node = MakeDirNode(provider.Title, tag);
                 node.ToolTipText = provider.Root;
                 pc.Nodes.Add(node);
+                string replica = Store.ReplicaRoot(provider);
+                NodeTag replicaTag = new NodeTag();
+                replicaTag.Key = replica;
+                replicaTag.FullPath = replica;
+                TreeNode replicaNode = MakeDirNode("Local replica  ·  " + Store.ReplicaLeaf(provider), replicaTag);
+                replicaNode.ToolTipText = replica + "\r\nSame folders as " + provider.Root;
+                pc.Nodes.Add(replicaNode);
             }
             NodeTag linkedTag = new NodeTag();
             linkedTag.Key = "vfs:linked";
@@ -372,7 +391,8 @@ namespace DriveFolderSync
             if (current == "vfs:linked") { Navigate("vfs:pc", true); return; }
             foreach (Provider provider in Store.DetectProviders())
             {
-                if (string.Equals(Store.Norm(current), Store.Norm(provider.Root), StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(Store.Norm(current), Store.Norm(provider.Root), StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Store.Norm(current), Store.Norm(Store.ReplicaRoot(provider)), StringComparison.OrdinalIgnoreCase))
                 {
                     Navigate("vfs:pc", true);
                     return;
@@ -444,6 +464,14 @@ namespace DriveFolderSync
                     row.Size = "";
                     row.LastSynced = "";
                     built.Add(row);
+                    Row replica = new Row();
+                    replica.Name = "Local replica  ·  " + Store.ReplicaLeaf(provider);
+                    replica.Status = Directory.Exists(Store.ReplicaRoot(provider)) ? "Same folders as the drive" : "Not created yet";
+                    replica.Kind = "none";
+                    replica.FullPath = Store.ReplicaRoot(provider);
+                    replica.NavigateKey = Store.ReplicaRoot(provider);
+                    replica.IsDir = true;
+                    built.Add(replica);
                 }
                 Row linked = new Row();
                 linked.Name = "Linked folders";
@@ -452,7 +480,7 @@ namespace DriveFolderSync
                 linked.IsDir = true;
                 linked.NavigateKey = "vfs:linked";
                 built.Add(linked);
-                syncLine = "Choose a cloud folder, then Link folder";
+                syncLine = "Open a drive folder and choose Local replica to keep the same folders on this PC";
                 return built;
             }
             if (key == "vfs:linked")
@@ -476,6 +504,9 @@ namespace DriveFolderSync
                 syncLine = "Linked folders upload on shutdown and refresh when you sign in";
                 return built;
             }
+            List<Provider> places = Store.DetectProviders();
+            Store.Place place = Store.FindPlace(key, places);
+            if (place != null) return BuildPlaceRows(place, out syncLine);
             if (!Directory.Exists(key)) throw new DirectoryNotFoundException("This folder is not available.");
             List<LinkFolder> links = Store.ReadLinks();
             LinkFolder link = SyncEngine.FindLink(key, links);
@@ -568,6 +599,154 @@ namespace DriveFolderSync
             return built;
         }
 
+        List<Row> BuildPlaceRows(Store.Place place, out string syncLine)
+        {
+            List<Row> built = new List<Row>();
+            string when = "";
+            List<LinkFolder> links = Store.ReadLinks();
+            LinkFolder link = SyncEngine.FindLink(place.ReplicaPath, links);
+            if (link == null) link = SyncEngine.FindLink(place.CloudPath, links);
+            Dictionary<string, Snap> state = null;
+            string relBase = "";
+            if (link != null)
+            {
+                state = Store.ReadState(Store.StatePath(link.Id));
+                string anchor = Store.IsUnder(place.ReplicaPath, link.Local) ? link.Local : Store.ResolveRemote(link, Store.DetectProviders());
+                if (!string.IsNullOrEmpty(anchor))
+                {
+                    string here = Store.IsUnder(place.ReplicaPath, link.Local) ? place.ReplicaPath : place.CloudPath;
+                    relBase = Store.Relative(here, anchor) ?? "";
+                }
+                when = SyncEngine.FormatWhen(link.LastSync);
+            }
+            syncLine = "Cloud: " + place.CloudPath + "    Local replica: " + place.ReplicaPath;
+            if (!string.IsNullOrEmpty(when)) syncLine = syncLine + "    Last synced " + when;
+            else if (link == null) syncLine = syncLine + "    Not linked yet";
+
+            Dictionary<string, MirrorChild> map = new Dictionary<string, MirrorChild>(StringComparer.OrdinalIgnoreCase);
+            AddPlaceChildren(map, place.CloudPath, true);
+            AddPlaceChildren(map, place.ReplicaPath, false);
+            foreach (MirrorChild child in map.Values)
+            {
+                bool isDir = child.CloudIsDir || child.LocalIsDir;
+                Row row = new Row();
+                row.Name = child.Name;
+                row.IsDir = isDir;
+                string cloudChild = Path.Combine(place.CloudPath, child.Name);
+                string localChild = Path.Combine(place.ReplicaPath, child.Name);
+                if (place.ViewingReplica)
+                {
+                    row.NavigateKey = isDir ? localChild : null;
+                    row.FullPath = child.LocalFile != null || child.LocalIsDir ? localChild : cloudChild;
+                }
+                else
+                {
+                    row.NavigateKey = isDir ? cloudChild : null;
+                    row.FullPath = child.CloudFile != null || child.CloudIsDir ? cloudChild : localChild;
+                }
+                FileInfo shown = place.ViewingReplica ? (child.LocalFile ?? child.CloudFile) : (child.CloudFile ?? child.LocalFile);
+                if (shown != null)
+                {
+                    row.Modified = shown.LastWriteTime.ToString("g");
+                    row.Size = SyncEngine.FormatSize(shown.Length);
+                }
+                bool onCloud = child.CloudIsDir || child.CloudFile != null;
+                bool onLocal = child.LocalIsDir || child.LocalFile != null;
+                if (isDir)
+                {
+                    row.Status = "Folder";
+                    row.Kind = "same";
+                    if (onCloud && !onLocal) { row.Status = "Only in the cloud"; row.Kind = "cloud"; }
+                    else if (onLocal && !onCloud) { row.Status = "Only on this PC"; row.Kind = "local"; }
+                    if (state != null)
+                    {
+                        string rel = string.IsNullOrEmpty(relBase) ? child.Name : relBase + "\\" + child.Name;
+                        string kind = FolderKind(state, rel);
+                        if (kind == "local") { row.Status = "Has local changes"; row.Kind = "local"; }
+                        else if (kind == "cloud") { row.Status = "Has cloud changes"; row.Kind = "cloud"; }
+                    }
+                    if (link != null) row.LastSynced = when;
+                }
+                else if (link != null && state != null)
+                {
+                    string rel = string.IsNullOrEmpty(relBase) ? child.Name : relBase + "\\" + child.Name;
+                    FileRecord localRec = ToRecord(child.LocalFile, rel);
+                    FileRecord remoteRec = ToRecord(child.CloudFile, rel);
+                    Snap snap = state.ContainsKey(rel) ? state[rel] : null;
+                    SyncEngine.RowStatus classified = SyncEngine.Classify(localRec, remoteRec, snap);
+                    row.Kind = classified.Kind;
+                    row.Status = classified.Text;
+                    row.LastSynced = SyncEngine.FormatWhen(string.IsNullOrEmpty(classified.LastSynced) ? link.LastSync : classified.LastSynced);
+                }
+                else if (onCloud && !onLocal)
+                {
+                    row.Kind = "cloud";
+                    row.Status = "Only in the cloud";
+                }
+                else if (onLocal && !onCloud)
+                {
+                    row.Kind = "local";
+                    row.Status = "Only on this PC";
+                }
+                else
+                {
+                    row.Kind = "same";
+                    row.Status = "In both places";
+                    if (child.CloudFile != null && child.LocalFile != null && child.CloudFile.Length != child.LocalFile.Length)
+                    {
+                        row.Kind = "cloud";
+                        row.Status = "Changed on both sides";
+                    }
+                }
+                built.Add(row);
+            }
+            built.Sort(delegate(Row a, Row b)
+            {
+                if (a.IsDir != b.IsDir) return a.IsDir ? -1 : 1;
+                return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+            });
+            return built;
+        }
+
+        static void AddPlaceChildren(Dictionary<string, MirrorChild> map, string dir, bool cloud)
+        {
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
+            FileSystemInfo[] children;
+            try { children = new DirectoryInfo(dir).GetFileSystemInfos(); }
+            catch { return; }
+            foreach (FileSystemInfo child in children)
+            {
+                bool isDir = (child.Attributes & FileAttributes.Directory) != 0;
+                if ((child.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                if (SyncEngine.SkipName(child.Name, isDir)) continue;
+                MirrorChild item;
+                if (!map.TryGetValue(child.Name, out item))
+                {
+                    item = new MirrorChild();
+                    item.Name = child.Name;
+                    map[child.Name] = item;
+                }
+                if (cloud)
+                {
+                    if (isDir) item.CloudIsDir = true;
+                    else item.CloudFile = child as FileInfo;
+                }
+                else if (isDir) item.LocalIsDir = true;
+                else item.LocalFile = child as FileInfo;
+            }
+        }
+
+        static FileRecord ToRecord(FileInfo file, string rel)
+        {
+            if (file == null) return null;
+            FileRecord record = new FileRecord();
+            record.Rel = rel;
+            record.Full = file.FullName;
+            record.Length = file.Length;
+            record.MtimeUtc = file.LastWriteTimeUtc;
+            return record;
+        }
+
         static string FolderKind(Dictionary<string, Snap> state, string rel)
         {
             string prefix = rel + "\\";
@@ -646,6 +825,112 @@ namespace DriveFolderSync
             }
         }
 
+        void Replica_Click(object sender, EventArgs e)
+        {
+            List<Provider> providers = Store.DetectProviders();
+            List<string> clouds = new List<string>();
+            bool whole = false;
+            if (list.SelectedItems.Count > 0)
+            {
+                foreach (ListViewItem item in list.SelectedItems)
+                {
+                    Row row = item.Tag as Row;
+                    if (row == null || !row.IsDir) continue;
+                    string path = string.IsNullOrEmpty(row.FullPath) ? row.NavigateKey : row.FullPath;
+                    AddReplicaTarget(providers, clouds, path, ref whole);
+                }
+            }
+            if (clouds.Count == 0) AddReplicaTarget(providers, clouds, current, ref whole);
+            if (clouds.Count == 0)
+            {
+                MessageBox.Show(this, "Open a folder on a drive, or select folders in the list, then create a local replica.", "Drive Folder Sync");
+                return;
+            }
+            StringBuilder message = new StringBuilder();
+            message.AppendLine("Create a local replica with the same folders as the cloud?");
+            message.AppendLine();
+            int shown = 0;
+            foreach (string cloud in clouds)
+            {
+                if (shown >= 8) break;
+                Store.Place place = Store.FindPlace(cloud, providers);
+                message.AppendLine(cloud);
+                message.AppendLine("  ->  " + (place == null ? "" : place.ReplicaPath));
+                shown++;
+            }
+            if (clouds.Count > shown) message.AppendLine("and " + (clouds.Count - shown) + " more");
+            message.AppendLine();
+            if (whole) message.AppendLine("This includes the whole drive and can be very large.");
+            message.AppendLine("Subfolders stay in the same places. Files download into the local replica.");
+            if (MessageBox.Show(this, message.ToString(), "Drive Folder Sync", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK)
+                return;
+            if (busy) return;
+            busy = true;
+            UseWaitCursor = true;
+            statusText.Text = "Creating the local replica...";
+            List<string> chosen = new List<string>(clouds);
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string error = null;
+                string openPath = null;
+                try
+                {
+                    List<string> ids = new List<string>();
+                    foreach (string cloud in chosen)
+                    {
+                        Store.Place place = Store.FindPlace(cloud, Store.DetectProviders());
+                        if (place == null || !Directory.Exists(place.CloudPath)) continue;
+                        Directory.CreateDirectory(place.ReplicaPath);
+                        SyncEngine.MirrorDirectories(place.CloudPath, place.ReplicaPath);
+                        LinkFolder folder = SyncEngine.Link(place.ReplicaPath, place.Provider.Id, place.Relative);
+                        ids.Add(folder.Id);
+                        if (openPath == null) openPath = place.ReplicaPath;
+                    }
+                    foreach (string id in ids)
+                    {
+                        using (SyncEngine.LockState(180))
+                        {
+                            List<LinkFolder> links = Store.ReadLinks();
+                            foreach (LinkFolder folder in links)
+                            {
+                                if (string.Equals(folder.Id, id, StringComparison.OrdinalIgnoreCase))
+                                    SyncEngine.SyncLink(folder, "Pull", false);
+                            }
+                            Store.SaveLinks(links);
+                        }
+                    }
+                }
+                catch (Exception ex) { error = ex.Message; }
+                BeginInvoke(new Action(delegate
+                {
+                    busy = false;
+                    UseWaitCursor = false;
+                    BuildTree();
+                    if (!string.IsNullOrEmpty(openPath)) Navigate(openPath, true);
+                    else LoadCurrent();
+                    if (error != null) MessageBox.Show(this, error, "Drive Folder Sync", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    else statusText.Text = "Local replica is ready. Green is this PC, red is the cloud.";
+                }));
+            });
+        }
+
+        static void AddReplicaTarget(List<Provider> providers, List<string> clouds, string path, ref bool whole)
+        {
+            if (string.IsNullOrEmpty(path) || path.StartsWith("vfs:", StringComparison.OrdinalIgnoreCase)) return;
+            Store.Place place = Store.FindPlace(path, providers);
+            if (place == null || string.IsNullOrEmpty(place.CloudPath)) return;
+            foreach (string existing in clouds)
+            {
+                if (Store.IsUnder(place.CloudPath, existing)) return;
+            }
+            for (int i = clouds.Count - 1; i >= 0; i--)
+            {
+                if (Store.IsUnder(clouds[i], place.CloudPath)) clouds.RemoveAt(i);
+            }
+            clouds.Add(place.CloudPath);
+            if (string.IsNullOrEmpty(place.Relative)) whole = true;
+        }
+
         void Link_Click(object sender, EventArgs e)
         {
             string path = SelectedDirectory();
@@ -683,10 +968,7 @@ namespace DriveFolderSync
             if (inside != null)
             {
                 relative = Store.Relative(path, inside.Root) ?? "";
-                string safe = SafeName(inside.Detail);
-                if (string.IsNullOrEmpty(safe)) safe = SafeName(inside.Name);
-                string tail = string.IsNullOrEmpty(relative) ? SafeName(inside.Name) : relative;
-                local = Path.Combine(Store.LocalRoot(), safe, tail);
+                local = Store.ReplicaPath(inside, relative);
             }
             else
             {
@@ -732,13 +1014,6 @@ namespace DriveFolderSync
                     MessageBox.Show(this, ex.Message, "Drive Folder Sync", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
-        }
-
-        static string SafeName(string value)
-        {
-            if (string.IsNullOrEmpty(value)) return "drive";
-            foreach (char bad in Path.GetInvalidFileNameChars()) value = value.Replace(bad, '-');
-            return value.Trim();
         }
 
         void Unlink_Click(object sender, EventArgs e)
@@ -789,7 +1064,7 @@ namespace DriveFolderSync
         void About_Click(object sender, EventArgs e)
         {
             MessageBox.Show(this,
-                "Drive Folder Sync " + Store.Version + "\r\n\r\nGreen files changed on this PC since the last sync.\r\nRed files changed in the cloud, or both sides changed.\r\n\r\nLinked folders refresh when you sign in and upload when Windows shuts down.",
+                "Drive Folder Sync " + Store.Version + "\r\n\r\nLocal replica keeps the same folders as the cloud drive.\r\nGreen files changed on this PC since the last sync.\r\nRed files changed in the cloud, or both sides changed.\r\n\r\nLinked folders refresh when you sign in and upload when Windows shuts down.",
                 "Drive Folder Sync");
         }
 

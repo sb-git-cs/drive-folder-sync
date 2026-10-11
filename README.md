@@ -12,9 +12,13 @@ Run `DriveFolderSyncSetup.exe`. It installs for the current user, starts at sign
 
 Google Drive, OneDrive, and Dropbox folders that are already on the PC show up in the left pane. **Add drive** attaches any other folder, including a Dropbox folder that was not detected.
 
+## Local replica
+
+Open a drive and choose **Local replica**. The copy is created under your `Work Drive` folder with the same folders as the cloud drive. Browsing either side shows one list: folders that exist only in the cloud, only on this PC, or in both places.
+
 ## Link a folder
 
-Open a folder in a drive and choose **Link folder**. Pick the local copy and the cloud folder. The usual local copy is under your `Work Drive` folder. At shutdown, edits in the local copy are copied to the cloud folder. At sign-in, the local copy is refreshed from the cloud.
+Open a folder in a drive and choose **Link folder**. The local copy uses that same replica structure. At shutdown, edits in the local copy are copied to the cloud folder. At sign-in, the local copy is refreshed from the cloud.
 
 Personal and work Google Drive accounts both appear. A drive is included only after you link a folder from it.
 

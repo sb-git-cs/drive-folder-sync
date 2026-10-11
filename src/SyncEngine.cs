@@ -203,6 +203,39 @@ namespace DriveFolderSync
             return record;
         }
 
+        public static int MirrorDirectories(string cloud, string local)
+        {
+            if (string.IsNullOrEmpty(cloud) || !Directory.Exists(cloud)) return 0;
+            if (string.IsNullOrEmpty(local)) return 0;
+            Directory.CreateDirectory(local);
+            int made = 0;
+            Stack<string> stack = new Stack<string>();
+            stack.Push("");
+            while (stack.Count > 0)
+            {
+                string rel = stack.Pop();
+                string cloudDir = string.IsNullOrEmpty(rel) ? cloud : Path.Combine(cloud, rel);
+                string localDir = string.IsNullOrEmpty(rel) ? local : Path.Combine(local, rel);
+                if (!Directory.Exists(localDir))
+                {
+                    Directory.CreateDirectory(localDir);
+                    made++;
+                }
+                DirectoryInfo[] dirs;
+                try { dirs = new DirectoryInfo(cloudDir).GetDirectories(); }
+                catch { continue; }
+                foreach (DirectoryInfo dir in dirs)
+                {
+                    if ((dir.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                    if (SkipName(dir.Name, true)) continue;
+                    string child = string.IsNullOrEmpty(rel) ? dir.Name : rel + "\\" + dir.Name;
+                    stack.Push(child);
+                }
+            }
+            Store.Log("mirrored folders into " + local + " (" + made + " new)");
+            return made;
+        }
+
         public static SyncStats SyncFolder(string direction, string local, string remote, string statePath, bool cloudReadbackIsTruth)
         {
             SyncStats stats = new SyncStats();
@@ -690,10 +723,10 @@ namespace DriveFolderSync
         {
             if (provider == null || !provider.IsOnline) return null;
             string localFull = Store.Norm(local);
-            string mirror = Store.Norm(Store.LocalRoot());
-            if (Store.IsUnder(localFull, mirror) && !string.Equals(localFull, mirror, StringComparison.OrdinalIgnoreCase))
+            string replica = Store.Norm(Store.ReplicaRoot(provider));
+            if (Store.IsUnder(localFull, replica) && !string.Equals(localFull, replica, StringComparison.OrdinalIgnoreCase))
             {
-                string rel = Store.Relative(localFull, mirror);
+                string rel = Store.Relative(localFull, replica);
                 string remote = Path.Combine(provider.Root, rel ?? "");
                 if (Directory.Exists(remote) && Score(localFull, remote) != null) return rel;
             }

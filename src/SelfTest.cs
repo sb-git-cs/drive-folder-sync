@@ -114,6 +114,21 @@ namespace DriveFolderSync
                 SyncEngine.RowStatus cloudRow = SyncEngine.Classify(localRec, remoteRec, snap);
                 if (cloudRow.Kind != "cloud") throw new Exception("cloud change was not marked red");
 
+                Provider sample = new Provider();
+                sample.Name = "Google Drive";
+                sample.Kind = "GoogleDrive";
+                sample.Detail = "work@example.com (H:)";
+                sample.Root = @"H:\My Drive";
+                if (Store.ReplicaLeaf(sample) != "work@example.com") throw new Exception("replica folder name was not the cloud account");
+                string replica = Store.ReplicaPath(sample, @"docs\a");
+                if (!replica.EndsWith(@"work@example.com\docs\a", StringComparison.OrdinalIgnoreCase)) throw new Exception("replica path did not keep the cloud structure");
+                string cloudDir = Path.Combine(root, "cloud-tree");
+                string localDir = Path.Combine(root, "local-tree");
+                Directory.CreateDirectory(Path.Combine(cloudDir, "project", "notes"));
+                int made = SyncEngine.MirrorDirectories(cloudDir, localDir);
+                if (!Directory.Exists(Path.Combine(localDir, "project", "notes"))) throw new Exception("local replica did not keep the cloud folders");
+                if (made < 1) throw new Exception("mirror did not create folders");
+
                 File.WriteAllText(resultPath, "self-test passed");
                 return 0;
             }
