@@ -526,6 +526,7 @@ namespace DriveFolderSync
         {
             Text = text;
             Primary = primary;
+            UseMnemonic = false;
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
             FlatStyle = FlatStyle.Flat;
             Font = Theme.Body;
@@ -569,7 +570,7 @@ namespace DriveFolderSync
             if (Focused && ShowFocusCues)
                 Theme.DrawRound(g, Primary ? Color.White : Theme.Accent, Rectangle.Inflate(new Rectangle(0, 0, Width, Height), -Theme.S(2), -Theme.S(2)), Theme.S(3), 1f);
             TextRenderer.DrawText(g, Text, Font, ClientRectangle, fore,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
     }
 

@@ -14,6 +14,7 @@ namespace DriveFolderSync
         public string Name;
         public string Root;
         public string Detail;
+        public bool Custom;
 
         public bool IsOnline
         {
@@ -76,7 +77,7 @@ namespace DriveFolderSync
 
     public class Store
     {
-        public const string Version = "1.4.2";
+        public const string Version = "1.5.0";
         static readonly object LogGate = new object();
         static string rootOverride;
         static string logOverride;
@@ -355,6 +356,7 @@ namespace DriveFolderSync
                 provider.Name = GetString(item, "name");
                 provider.Root = GetString(item, "root");
                 provider.Detail = GetString(item, "detail");
+                provider.Custom = true;
                 if (string.IsNullOrEmpty(provider.Id) || string.IsNullOrEmpty(provider.Root)) continue;
                 if (string.IsNullOrEmpty(provider.Kind)) provider.Kind = "Folder";
                 if (string.IsNullOrEmpty(provider.Name)) provider.Name = new DirectoryInfo(provider.Root).Name;
@@ -761,13 +763,30 @@ namespace DriveFolderSync
             return enumerable;
         }
 
+        // Missing or corrupt files read as null; a corrupt file is kept beside it for recovery.
+        // A file that stays locked throws, so callers never save an empty list over real data.
         public static Dictionary<string, object> ReadObject(string path)
         {
+            string tmp = path + ".tmp";
+            if (!File.Exists(path) && File.Exists(tmp))
+            {
+                try { File.Move(tmp, path); }
+                catch { }
+            }
+            if (!File.Exists(path)) return null;
+            string json = null;
+            for (int attempt = 1; json == null; attempt++)
+            {
+                try { json = File.ReadAllText(path, Encoding.UTF8); }
+                catch (IOException ex)
+                {
+                    if (attempt >= 5) throw new IOException("Could not read " + path + ". " + ex.Message, ex);
+                    System.Threading.Thread.Sleep(200);
+                }
+            }
+            if (string.IsNullOrWhiteSpace(json)) return null;
             try
             {
-                if (!File.Exists(path)) return null;
-                string json = File.ReadAllText(path, Encoding.UTF8);
-                if (string.IsNullOrWhiteSpace(json)) return null;
                 JavaScriptSerializer serializer = new JavaScriptSerializer();
                 serializer.MaxJsonLength = int.MaxValue;
                 return serializer.Deserialize<Dictionary<string, object>>(json);
@@ -775,6 +794,8 @@ namespace DriveFolderSync
             catch (Exception ex)
             {
                 Log("could not read " + path + ": " + ex.Message);
+                try { File.Copy(path, path + ".corrupt", true); }
+                catch { }
                 return null;
             }
         }
@@ -788,8 +809,17 @@ namespace DriveFolderSync
             string json = serializer.Serialize(value);
             string tmp = path + ".tmp";
             File.WriteAllText(tmp, json, new UTF8Encoding(false));
-            if (File.Exists(path)) File.Delete(path);
-            File.Move(tmp, path);
+            if (!File.Exists(path))
+            {
+                File.Move(tmp, path);
+                return;
+            }
+            try { File.Replace(tmp, path, null, true); }
+            catch (IOException)
+            {
+                File.Delete(path);
+                File.Move(tmp, path);
+            }
         }
     }
 }

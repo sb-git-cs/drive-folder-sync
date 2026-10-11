@@ -1,4 +1,25 @@
-# Review — 1.4.2
+# Review — 1.5.0
+
+## Blocker — resolved in 1.5.0
+
+- Pull permanently deleted unchanged local files that were missing from the cloud folder, including every file when a cloud client still loading at sign-in listed an empty folder. Per the owner's rule, sync now never deletes local files: cloud-deleted files stay on this PC, keep their snapshot and show as Missing in the cloud, and backup does not recreate them in the cloud. The only local-deletion path (SyncEngine.DeleteFile) was removed. Covered by /selftest (single deletion, emptied folder, deleted folder).
+- Settings and manifest saves deleted the old file before moving the new one in, and any read error returned an empty list that the next save wrote back, which could erase every attachment. Saves now use File.Replace, interrupted saves are recovered from .tmp, corrupt files are copied to .corrupt, and a persistently locked file throws instead of reading as empty. Evidence: src/Store.cs ReadObject/WriteObject. Covered by /selftest.
+
+## Should-fix — resolved in 1.5.0
+
+- "Link folder for sync" from Explorer while the app was open only focused the window; the folder is now handed to the open window. Drive roots ("D:\") are parsed correctly.
+- Closing the window during a sync ended the process mid-copy. It now offers to close when the sync finishes. Background completion callbacks no longer throw when the window is gone.
+- Drag-and-drop silently overwrote existing files. It now asks first (UI test covers cancel).
+- Uninstall from the app left the running exe behind, didn't stop the UI when run from Settings, and ignored active syncs. It now takes the sync lock, stops all copies, exits so the exe can be deleted, and registers/unregisters an Apps & Features entry.
+- Add cloud drive accepted the Windows drive, overlapping drives and attached local folders, wrote config without the state lock, and made name-matched OneDrive/Dropbox folders unremovable. All fixed.
+- "Attach & back up" rendered as "Attach _back up" (mnemonic).
+
+## Validation — 1.5.0
+
+- Build, /selftest and /uitest pass locally. The attach-dialog preview was inspected.
+- Not exercised: real Windows shutdown, a live update from GitHub, or uninstalling via Settings → Apps.
+
+# Prior review — 1.4.2
 
 ## Should-fix — resolved in 1.4.2
 

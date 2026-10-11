@@ -6,8 +6,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Drive Folder Sync")]
 [assembly: AssemblyProduct("Drive Folder Sync")]
-[assembly: AssemblyVersion("1.4.2.0")]
-[assembly: AssemblyFileVersion("1.4.2.0")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
 
 namespace DriveFolderSync
 {
@@ -54,7 +54,7 @@ namespace DriveFolderSync
                     Application.Run(new SetupForm());
                     return;
                 }
-                RunUi(ValueAfter(args, "/link"));
+                RunUi(ShellPath(ValueAfter(args, "/link")));
             }
             catch (Exception ex)
             {
@@ -72,6 +72,12 @@ namespace DriveFolderSync
                 EventWaitHandle show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\DriveFolderSyncUiShow");
                 if (!created)
                 {
+                    // Hand a right-clicked folder to the window that is already open.
+                    if (!string.IsNullOrEmpty(linkPath))
+                    {
+                        try { File.WriteAllText(LinkRequestPath, linkPath); }
+                        catch (Exception ex) { Store.Log("could not pass the folder to the open window: " + ex.Message); }
+                    }
                     show.Set();
                     return;
                 }
@@ -87,6 +93,17 @@ namespace DriveFolderSync
                                 if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
                                 form.Show();
                                 form.Activate();
+                                string requested = null;
+                                try
+                                {
+                                    if (File.Exists(LinkRequestPath))
+                                    {
+                                        requested = File.ReadAllText(LinkRequestPath).Trim();
+                                        File.Delete(LinkRequestPath);
+                                    }
+                                }
+                                catch (Exception ex) { Store.Log("could not read the folder request: " + ex.Message); }
+                                if (!string.IsNullOrEmpty(requested)) form.RequestAttach(requested);
                             }));
                         }
                         catch { }
@@ -96,6 +113,20 @@ namespace DriveFolderSync
                 thread.Start();
                 Application.Run(form);
             }
+        }
+
+        static string LinkRequestPath
+        {
+            get { return Path.Combine(Store.Root, "link-request.txt"); }
+        }
+
+        // Explorer passes a drive root as "D:\" which arrives as D:" after argument parsing.
+        static string ShellPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            path = path.Trim().TrimEnd('"');
+            if (path.Length == 2 && path[1] == ':') path += "\\";
+            return path;
         }
 
         static bool Has(string[] args, string name)

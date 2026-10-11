@@ -245,12 +245,6 @@ namespace DriveFolderSync
             File.Copy(LongPath(source), LongPath(destination), true);
         }
 
-        public static void DeleteFile(string target)
-        {
-            string path = LongPath(target);
-            if (File.Exists(path)) File.Delete(path);
-        }
-
         public static string ConflictRel(string rel, string kind)
         {
             string leaf = Path.GetFileName(rel);
@@ -623,7 +617,10 @@ namespace DriveFolderSync
                         Store.Log("download failed " + rel + ": " + ex.Message);
                     }
                 }
+                // Refresh never deletes local files. A file deleted in the cloud stays on this PC
+                // and its snapshot is kept so it shows as Missing in the cloud.
                 List<string> stateKeys = new List<string>(state.Keys);
+                int kept = 0;
                 foreach (string rel in stateKeys)
                 {
                     if (remoteFiles.ContainsKey(rel)) continue;
@@ -635,8 +632,7 @@ namespace DriveFolderSync
                         continue;
                     }
                     if (snap.Pending || snap.Hold || string.IsNullOrEmpty(snap.Rl)) continue;
-                    bool localSame = SameSig(localFile.Length, localFile.MtimeUtc, snap.Ll, snap.Lm);
-                    if (!localSame)
+                    if (!SameSig(localFile.Length, localFile.MtimeUtc, snap.Ll, snap.Lm))
                     {
                         Snap entry = NewEntry(localFile, null, true, false);
                         entry.Rl = snap.Rl;
@@ -644,20 +640,9 @@ namespace DriveFolderSync
                         state[rel] = entry;
                         continue;
                     }
-                    try
-                    {
-                        RejectReparsePath(Path.GetDirectoryName(Path.Combine(remote, rel)));
-                        DeleteFile(localFile.Full);
-                        state.Remove(rel);
-                        stats.Del++;
-                        Store.Log("deleted local " + rel);
-                    }
-                    catch (Exception ex)
-                    {
-                        stats.Errors++;
-                        Store.Log("local delete failed " + rel + ": " + ex.Message);
-                    }
+                    kept++;
                 }
+                if (kept > 0) Store.Log("kept " + kept + " local files in " + local + " that are no longer in the cloud folder");
             }
 
             Store.SaveState(statePath, state);

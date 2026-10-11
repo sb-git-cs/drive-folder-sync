@@ -31,6 +31,7 @@ namespace DriveFolderSync
             WriteTask(dest);
             WriteShortcut(dest);
             WriteContextMenu(dest);
+            WriteUninstallEntry(dest);
             Store.Log("installed Drive Folder Sync " + Store.Version);
             Process.Start(new ProcessStartInfo(dest, "/host") { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
             if (startUi) Process.Start(new ProcessStartInfo(dest) { UseShellExecute = true });
@@ -41,22 +42,45 @@ namespace DriveFolderSync
             Uninstall(quiet, null);
         }
 
-        public static void Uninstall(bool quiet, IWin32Window owner)
+        // Returns true when the app was removed; the caller should exit so its executable can be deleted.
+        public static bool Uninstall(bool quiet, IWin32Window owner)
         {
             if (!quiet)
             {
                 bool answer = Dialogs.Confirm(owner, "Remove Drive Folder Sync?",
-                    "This removes the app, the sign-in task, and the right-click command for this Windows user. Linked files on disk are left where they are.",
+                    "This removes the app, the sign-in task, and the right-click command for this Windows user. Your files, in the cloud and on this PC, are not deleted.",
                     null, "Uninstall", MessageKind.Warning);
-                if (!answer) return;
+                if (!answer) return false;
             }
-            KillHost(Store.PidFile);
-            RemoveTasks();
-            try { Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\Directory\shell\DriveFolderSync", false); }
-            catch { }
-            string shortcut = ShortcutPath();
-            if (File.Exists(shortcut)) File.Delete(shortcut);
-            Store.Log("uninstalled Drive Folder Sync shortcuts and startup");
+            IDisposable stateLock = null;
+            try { stateLock = SyncEngine.LockState(quiet ? 180 : 30); }
+            catch (TimeoutException)
+            {
+                if (!quiet)
+                {
+                    Dialogs.Error(owner, "A sync is still running", "Drive Folder Sync was not removed. Try again when the current sync finishes.");
+                    return false;
+                }
+                Store.Log("uninstall continued while a sync was busy");
+            }
+            try
+            {
+                KillHost(Store.PidFile);
+                KillOtherCopies();
+                RemoveTasks();
+                try { Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\Directory\shell\DriveFolderSync", false); }
+                catch { }
+                try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKey, false); }
+                catch { }
+                string shortcut = ShortcutPath();
+                if (File.Exists(shortcut)) File.Delete(shortcut);
+                Store.Log("uninstalled Drive Folder Sync shortcuts and startup");
+            }
+            finally
+            {
+                if (stateLock != null) stateLock.Dispose();
+            }
+            if (!quiet) Dialogs.Success(owner, "Drive Folder Sync was removed", "Your files were not deleted. Your settings stay in " + Store.DefaultRoot + " in case you reinstall.");
             string exe = Store.InstallExe;
             if (File.Exists(exe))
             {
@@ -67,7 +91,29 @@ namespace DriveFolderSync
                 info.WindowStyle = ProcessWindowStyle.Hidden;
                 Process.Start(info);
             }
-            if (!quiet) Dialogs.Success(owner, "Drive Folder Sync was removed", "Your folders were not deleted.");
+            return true;
+        }
+
+        const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\DriveFolderSync";
+
+        // Lists the app in Settings > Apps so it can be removed like other programs.
+        static void WriteUninstallEntry(string exe)
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(UninstallKey))
+            {
+                key.SetValue("DisplayName", "Drive Folder Sync");
+                key.SetValue("DisplayVersion", Store.Version);
+                key.SetValue("Publisher", "SB");
+                key.SetValue("DisplayIcon", exe + ",0");
+                key.SetValue("InstallLocation", Path.GetDirectoryName(exe));
+                key.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
+                key.SetValue("URLInfoAbout", "https://github.com/sb-git-cs/drive-folder-sync");
+                key.SetValue("UninstallString", "\"" + exe + "\" /uninstall");
+                key.SetValue("QuietUninstallString", "\"" + exe + "\" /uninstall /quiet");
+                key.SetValue("NoModify", 1, RegistryValueKind.DWord);
+                key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+                key.SetValue("EstimatedSize", (int)Math.Max(1, new FileInfo(exe).Length / 1024), RegistryValueKind.DWord);
+            }
         }
 
         static void KillOtherCopies()
@@ -165,7 +211,7 @@ namespace DriveFolderSync
         {
             using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Directory\shell\DriveFolderSync"))
             {
-                key.SetValue("", "Link folder for sync");
+                key.SetValue("", "Attach to Drive Folder Sync");
                 key.SetValue("Icon", exe + ",0");
             }
             using (RegistryKey command = Registry.CurrentUser.CreateSubKey(@"Software\Classes\Directory\shell\DriveFolderSync\command"))
@@ -180,9 +226,9 @@ namespace DriveFolderSync
     {
         static readonly string[] Included = new string[]
         {
-            "Starts when you sign in and refreshes linked folders from the cloud",
-            "Uploads linked folders when Windows shuts down",
-            "Adds “Link folder for sync” to the folder right-click menu",
+            "Starts when you sign in and refreshes attached folders from the cloud",
+            "Backs up attached folders when Windows shuts down",
+            "Adds “Attach to Drive Folder Sync” to the folder right-click menu",
             "Adds Drive Folder Sync to the Start menu"
         };
 
@@ -332,7 +378,7 @@ namespace DriveFolderSync
             bool installed = File.Exists(Store.InstallExe);
             install.Text = installed ? "Reinstall" : "Install";
             uninstall.Visible = installed;
-            note.Text = "Installs for " + Environment.UserName + " only. Nothing is copied until you link a folder."
+            note.Text = "Installs for " + Environment.UserName + " only. Nothing is copied until you attach a folder."
                 + (installed ? "\r\nA copy is already installed for this user. Reinstall to update it." : "");
             LayoutFooter();
             install.Focus();
@@ -379,7 +425,7 @@ namespace DriveFolderSync
             TextRenderer.DrawText(g, "Drive Folder Sync is installed", Theme.Title, new Rectangle(0, y, done.Width, Theme.Title.Height + Theme.S(4)), Theme.Text,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix);
             y += Theme.Title.Height + Theme.S(12);
-            TextRenderer.DrawText(g, "It starts when you sign in, and the Explorer window is opening now.\r\nTo link a folder later, right-click it in File Explorer and choose “Link folder for sync”.",
+            TextRenderer.DrawText(g, "It starts when you sign in, and the app is opening now.\r\nTo back up a folder later, right-click it in File Explorer and choose “Attach to Drive Folder Sync”.",
                 Theme.Body, new Rectangle(pad, y, done.Width - pad * 2, done.Height - y), Theme.TextMuted,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
         }
@@ -470,7 +516,11 @@ namespace DriveFolderSync
 
         void Uninstall_Click(object sender, EventArgs e)
         {
-            Installer.Uninstall(false, this);
+            if (!Installer.Uninstall(false, this)) return;
+            install.Text = "Install";
+            uninstall.Visible = false;
+            note.Text = "Installs for " + Environment.UserName + " only. Nothing is copied until you attach a folder.";
+            LayoutFooter();
         }
     }
 }

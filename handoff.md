@@ -1,15 +1,19 @@
 # Team handoff
 
 ## Objective
-Version 1.4.2: right-click removal of attached synced folders, targeting the clicked attachment and preserving local/cloud files. Diagnose conflicting cloud roots and allow removal of unused manually added drive registrations.
+Version 1.5.0: audit fixes for sync safety, workflow bugs and consistent UI wording. Committed to main; the main-branch workflow publishes the release.
 
 ## Baseline
-Started from clean main/origin/main ac6d64e (released v1.4.1).
+Started from clean main/origin/main 82c4782 (released v1.4.2). Remote branch `claude/admiring-clarke-1b18bc` has one unmerged README/screenshot commit (80e7c82) and was left untouched.
 
 ## Assignments
 | Agent | Assignment | Status |
 | --- | --- | --- |
-| Codex | Implement and review right-click attachment removal; validate and publish patch release | Complete; validated locally, publication uses the main-branch release workflow |
+| Claude | Audit, fix, test and document 1.5.0 | Complete; committed to main for release |
 
 ## Validation and delivery
-Final local build, sync self-test, native UI self-test and diff checks passed. Native UI regressions cover local/cloud folder context menus, overview and tree actions, cancellation, disabling during sync, removing the chosen attachment and preserving both copies. See review.md for review evidence. The main-branch build workflow runs sync and UI test suites before publishing the installer.
+Local build, `/selftest` and `/uitest` pass. Owner rule: sync never deletes local files, even when the cloud deletes them. New regression tests cover single cloud deletion, emptied and deleted cloud folders, atomic save/recovery/corrupt-file handling, the drop replace prompt and the attach-dialog hint. See review.md.
+
+## Next steps
+- Confirm the 1.5.0 release workflow published the installer.
+- Follow-ups not done: list columns overflow into a horizontal scrollbar at the default window size; viewing large pending folders compares file contents on every browse; dark mode is unsupported; the auto-link watcher for Desktop/Documents/Downloads is undocumented in the README.

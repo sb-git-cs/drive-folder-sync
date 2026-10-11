@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5.0
+
+Safer syncing and a more consistent app.
+
+- Drive Folder Sync no longer deletes any file on this PC. A file deleted or trashed in the cloud stays on this PC and is shown as **Missing in the cloud**. Previously, refresh deleted unchanged local copies, and an empty listing from a cloud app that was still loading could remove many files at once.
+- Settings and the attached-folder list are saved atomically. An interrupted save is recovered, and a corrupt file is set aside instead of silently replacing your attachments.
+- Choosing **Attach to Drive Folder Sync** in File Explorer while the app is open now opens the attach dialog. Drive roots are handled correctly.
+- Closing the window during a sync waits for the copy to finish instead of interrupting it.
+- Dragging onto a file or folder that already exists asks before replacing it.
+- Drive Folder Sync is listed in **Settings → Apps** and can be uninstalled there. Uninstalling from the app now closes it so its program file is removed, and it waits for an active sync.
+- **Add cloud drive** rejects the Windows drive, existing cloud drives and attached local folders. Any drive you added can be removed from its tab when it has no attachments.
+- Consistent wording: folders are *attached* and *backed up* throughout the app, installer and tray. **… → View sync log** opens the log directly, and the attach dialog says whether the cloud folder exists or will be created.
+- Fixed the **Attach & back up** button label, which rendered as "Attach _back up".
+
 ## 1.4.2
 
 - Right-click an attached local or cloud folder and choose **Remove synced folder** to stop its automatic backup and refresh. Local and cloud files are kept.

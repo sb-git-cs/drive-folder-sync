@@ -86,7 +86,40 @@ namespace DriveFolderSync
                 }
                 if (SyncEngine.Classify(null, null, missingSnap).Kind == "same") throw new Exception("absent copies were shown as synced");
                 pull = SyncEngine.SyncFolder("Pull", local, remote, state, true);
-                if (File.Exists(Path.Combine(local, "from-drive.txt"))) throw new Exception("cloud delete was not applied locally");
+                if (!File.Exists(Path.Combine(local, "from-drive.txt")) || pull.Del != 0) throw new Exception("a cloud deletion removed the local file");
+                if (SyncEngine.Classify(missingLocal, null, Store.ReadState(state)["from-drive.txt"]).Text != "Missing in the cloud")
+                    throw new Exception("a file deleted in the cloud was not shown as missing in the cloud");
+                push = SyncEngine.SyncFolder("Push", local, remote, state, true);
+                if (File.Exists(cloud) || !File.Exists(Path.Combine(local, "from-drive.txt"))) throw new Exception("backup recreated a cloud-deleted file or removed the local copy");
+                File.Delete(Path.Combine(local, "from-drive.txt"));
+
+                string massLocal = Path.Combine(root, "mass-local");
+                string massRemote = Path.Combine(root, "mass-remote");
+                string massState = Path.Combine(root, "mass-state.json");
+                Directory.CreateDirectory(massRemote);
+                for (int i = 0; i < 12; i++) File.WriteAllText(Path.Combine(massRemote, "file" + i + ".txt"), "mass " + i);
+                SyncEngine.SyncFolder("Pull", massLocal, massRemote, massState, true);
+                File.Delete(Path.Combine(massRemote, "file3.txt"));
+                pull = SyncEngine.SyncFolder("Pull", massLocal, massRemote, massState, true);
+                if (Directory.GetFiles(massLocal).Length != 12 || pull.Del != 0) throw new Exception("a single cloud deletion removed a local file");
+                foreach (string file in Directory.GetFiles(massRemote)) File.Delete(file);
+                pull = SyncEngine.SyncFolder("Pull", massLocal, massRemote, massState, false);
+                if (Directory.GetFiles(massLocal).Length != 12 || pull.Del != 0) throw new Exception("an emptied cloud folder removed local files");
+                Directory.Delete(massRemote, true);
+                SyncEngine.SyncFolder("Pull", massLocal, massRemote, massState, true);
+                if (Directory.GetFiles(massLocal).Length != 12) throw new Exception("a deleted cloud folder removed local files");
+
+                string manifest = Path.Combine(root, "atomic.json");
+                Dictionary<string, object> saved = new Dictionary<string, object>();
+                saved["value"] = "first";
+                Store.WriteObject(manifest, saved);
+                saved["value"] = "second";
+                Store.WriteObject(manifest, saved);
+                if (Store.GetString(Store.ReadObject(manifest), "value") != "second") throw new Exception("replacing a saved file lost its contents");
+                File.Move(manifest, manifest + ".tmp");
+                if (Store.GetString(Store.ReadObject(manifest), "value") != "second") throw new Exception("an interrupted save was not recovered");
+                File.WriteAllText(manifest, "{ not json");
+                if (Store.ReadObject(manifest) != null || !File.Exists(manifest + ".corrupt")) throw new Exception("a corrupt file was not set aside");
 
                 string divL = Path.Combine(local, "diverged.txt");
                 string divR = Path.Combine(remote, "diverged.txt");

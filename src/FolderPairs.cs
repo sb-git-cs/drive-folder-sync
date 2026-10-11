@@ -49,13 +49,16 @@ namespace DriveFolderSync
             tabSignature = signature;
             driveTabs.SuspendLayout();
             while (driveTabs.Controls.Count > 0) driveTabs.Controls[0].Dispose();
-            foreach (Provider provider in providers) AddDriveTab(provider.Title, provider.Id, provider.Root);
+            foreach (Provider provider in providers) AddDriveTab(provider);
             driveTabs.ResumeLayout();
             SelectDriveTab();
         }
 
-        void AddDriveTab(string title, string id, string key)
+        void AddDriveTab(Provider provider)
         {
+            string title = provider.Title;
+            string id = provider.Id;
+            string key = provider.Root;
             Button tab = new Button();
             tab.Text = title;
             tab.Tag = id;
@@ -72,9 +75,9 @@ namespace DriveFolderSync
             tab.FlatAppearance.BorderColor = Theme.Border;
             tab.Click += delegate { Navigate(key, true); };
             tips.SetToolTip(tab, key.StartsWith("vfs:") ? title : key);
-            foreach (Dictionary<string, object> entry in Store.GetObjectList(Store.ReadConfig(), "customProviders"))
+            // Only drives saved in the settings can be removed; detected cloud apps reappear on their own.
+            if (provider.Custom)
             {
-                if (Store.GetString(entry, "id") != id || Store.GetString(entry, "kind") != "Folder") continue;
                 ContextMenuStrip menu = new ContextMenuStrip();
                 ToolStripMenuItem remove = MenuItem("Remove added cloud drive", Glyphs.Cancel, delegate { RemoveAddedDrive(id, key); });
                 menu.Items.Add(remove);
@@ -87,7 +90,6 @@ namespace DriveFolderSync
                 };
                 tab.ContextMenuStrip = menu;
                 tab.Disposed += delegate { menu.Dispose(); };
-                break;
             }
             driveTabs.Controls.Add(tab);
         }
@@ -302,7 +304,19 @@ namespace DriveFolderSync
                 ShowAction("Drop inside the selected folder pair.", "warn");
                 return true;
             }
-            SetBusy(true, "Copying to " + (toLocal ? "this PC…" : "the cloud…"));
+            List<string> existing = new List<string>();
+            foreach (string source in sources)
+            {
+                string target = Path.Combine(destination, Path.GetFileName(source.TrimEnd('\\')));
+                if (File.Exists(target)) existing.Add("File\t" + Path.GetFileName(target));
+                else if (Directory.Exists(target)) existing.Add("Folder\t" + Path.GetFileName(target));
+            }
+            if (existing.Count > 0 && !Dialogs.Confirm(this,
+                existing.Count == 1 ? "Replace an existing item?" : "Replace " + existing.Count + " existing items?",
+                "These names already exist in " + destination + ". Files with the same name are replaced and folders are merged. Other files are kept.",
+                existing, "Replace", MessageKind.Warning))
+                return true;
+            SetBusy(true,"Copying to " + (toLocal ? "this PC…" : "the cloud…"));
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string error = null;

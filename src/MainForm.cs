@@ -215,6 +215,7 @@ namespace DriveFolderSync
         string driveKey = "vfs:pc";
         string localKey = "";
         volatile bool busy;
+        bool closeWhenIdle;
         readonly string startupLink;
 
         public MainForm(string linkPath)
@@ -260,7 +261,46 @@ namespace DriveFolderSync
                 list.Focus();
             });
             Load += new EventHandler(MainForm_Load);
-            FormClosing += new FormClosingEventHandler(delegate { SaveWindow(); });
+            FormClosing += new FormClosingEventHandler(MainForm_FormClosing);
+        }
+
+        // Closing mid-copy would end the process and leave a partially written file, so wait for the sync.
+        void MainForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            if (busy && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                if (closeWhenIdle) return;
+                if (!Dialogs.Confirm(this, "A sync is still running", "Drive Folder Sync will close as soon as the current copy finishes. Your files are not affected.", null, "Close when finished", MessageKind.Info))
+                    return;
+                closeWhenIdle = true;
+                Hide();
+                return;
+            }
+            SaveWindow();
+        }
+
+        // Reopening the window while it waits to close keeps it open.
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            if (Visible) closeWhenIdle = false;
+            base.OnVisibleChanged(e);
+        }
+
+        // Opens the attach dialog for a folder chosen from the File Explorer right-click menu.
+        public void RequestAttach(string path)
+        {
+            if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
+            {
+                ShowAction("The folder you chose is no longer available.", "warn");
+                return;
+            }
+            if (busy)
+            {
+                Dialogs.Info(this, "A sync is still running", "Try attaching " + path + " again when the current sync finishes.");
+                return;
+            }
+            OfferLink(path);
         }
 
         void BuildCommandBar()
@@ -276,16 +316,16 @@ namespace DriveFolderSync
             commands.Font = Theme.Body;
             commands.ShowItemToolTips = true;
 
-            refreshButton = Command("Refresh from cloud", Glyphs.Download, "Refresh this linked folder from the cloud", delegate { RunSync("Pull", true); });
-            uploadButton = Command("Backup to cloud", Glyphs.Upload, "Upload this linked folder to the cloud", delegate { RunSync("Push", true); });
+            refreshButton = Command("Refresh from cloud", Glyphs.Download, "Download cloud changes into the selected attached folder", delegate { RunSync("Pull", true); });
+            uploadButton = Command("Back up to cloud", Glyphs.Upload, "Upload changes from the selected attached folder to the cloud", delegate { RunSync("Push", true); });
             replicaButton = Command("Local replica", Glyphs.SaveLocal, "Copy only the selected folders and files to this PC", new EventHandler(Replica_Click));
             linkButton = Command("Attach folder", Glyphs.Link, "Back up a folder from any location on this PC", new EventHandler(AttachFolder_Click));
             ToolStripButton addDrive = Command("Add cloud drive", Glyphs.MapDrive, "Choose the folder used by your cloud desktop app. Use Attach folder for local backups.", new EventHandler(AddDrive_Click));
 
             syncAllButton = new ToolStripDropDownButton("Sync all");
-            Style(syncAllButton, Glyphs.Sync, "Refresh or upload every linked folder");
-            syncAllButton.DropDownItems.Add(MenuItem("Refresh all linked folders", Glyphs.Download, delegate { RunSync("Pull", false); }));
-            syncAllButton.DropDownItems.Add(MenuItem("Upload all linked folders", Glyphs.Upload, delegate { RunSync("Push", false); }));
+            Style(syncAllButton, Glyphs.Sync, "Refresh or back up every attached folder");
+            syncAllButton.DropDownItems.Add(MenuItem("Refresh all attached folders", Glyphs.Download, delegate { RunSync("Pull", false); }));
+            syncAllButton.DropDownItems.Add(MenuItem("Back up all attached folders", Glyphs.Upload, delegate { RunSync("Push", false); }));
 
             ToolStripDropDownButton more = new ToolStripDropDownButton();
             more.DisplayStyle = ToolStripItemDisplayStyle.Image;
@@ -305,9 +345,18 @@ namespace DriveFolderSync
             autoUpdate.CheckedChanged += delegate { UpdateManager.SetAutomatic(autoUpdate.Checked); };
             more.DropDownItems.Add(autoUpdate);
             more.DropDownItems.Add(MenuItem("Check and install updates", Glyphs.Download, delegate { CheckForUpdates(); }));
+            more.DropDownItems.Add(MenuItem("View sync log", Glyphs.OpenFile, new EventHandler(ViewLog_Click)));
             more.DropDownItems.Add(MenuItem("Open log folder", Glyphs.FolderOpen, new EventHandler(Log_Click)));
             more.DropDownItems.Add(new ToolStripSeparator());
-            more.DropDownItems.Add(MenuItem("Uninstall...", Glyphs.Delete, delegate { Installer.Uninstall(false, this); }));
+            more.DropDownItems.Add(MenuItem("Uninstall…", Glyphs.Delete, delegate
+            {
+                if (busy)
+                {
+                    Dialogs.Info(this, "A sync is still running", "Uninstall when the current sync finishes.");
+                    return;
+                }
+                if (Installer.Uninstall(false, this)) Application.Exit();
+            }));
             more.DropDownItems.Add(MenuItem("About Drive Folder Sync", Glyphs.Info, new EventHandler(About_Click)));
             more.DropDownOpening += new EventHandler(delegate { stopItem.Enabled = CurrentLink() != null; });
 
@@ -484,7 +533,7 @@ namespace DriveFolderSync
                 }
                 if (!IsRealPath(dest))
                 {
-                    ShowAction("Drop onto a folder on the drive or the local replica.", "warn");
+                    ShowAction("Drop onto a folder inside the selected folder pair.", "warn");
                     return;
                 }
                 StartTransfer(localSide, dest, sources);
@@ -740,7 +789,7 @@ namespace DriveFolderSync
                 NodeTag linkedTag = new NodeTag();
                 linkedTag.Key = "vfs:linked";
                 linkedTag.Loaded = true;
-                TreeNode linked = new TreeNode("Linked folders");
+                TreeNode linked = new TreeNode("Attached folders");
                 linked.Tag = linkedTag;
                 linked.ImageIndex = ShellImages.Index(Store.LocalRoot(), true);
                 linked.SelectedImageIndex = linked.ImageIndex;
@@ -1174,8 +1223,8 @@ namespace DriveFolderSync
                 }
                 Row linked = new Row();
                 int count = Store.ReadLinks().Count;
-                linked.Name = "Linked folders";
-                linked.Status = count + " linked";
+                linked.Name = "Attached folders";
+                linked.Status = count + " attached";
                 linked.Kind = "none";
                 linked.IsDir = true;
                 linked.FullPath = Store.LocalRoot();
@@ -1236,7 +1285,7 @@ namespace DriveFolderSync
                     }
                     else if (link.LastErrors > 0)
                     {
-                        page.Info.Badge = "Last sync had " + link.LastErrors + " error(s)";
+                        page.Info.Badge = "Last sync had " + Plural(link.LastErrors, "error") + " · see the log";
                         page.Info.BadgeKind = "cloud";
                     }
                 }
@@ -1405,8 +1454,8 @@ namespace DriveFolderSync
                 }
                 Row linked = new Row();
                 int count = Store.ReadLinks().Count;
-                linked.Name = "Linked folders";
-                linked.Status = count + " linked";
+                linked.Name = "Attached folders";
+                linked.Status = count + " attached";
                 linked.Kind = "none";
                 linked.IsDir = true;
                 linked.FullPath = Store.LocalRoot();
@@ -1435,15 +1484,15 @@ namespace DriveFolderSync
                     if (string.IsNullOrEmpty(remote)) { row.Status = "Drive missing"; row.Kind = "warn"; }
                     else if (!Directory.Exists(remote)) { row.Status = "Missing in the cloud"; row.Kind = "local"; }
                     else if (!Directory.Exists(folder.Local)) { row.Status = "Local folder missing"; row.Kind = "cloud"; }
-                    else if (folder.LastErrors > 0) { row.Status = "Linked  ·  " + folder.LastErrors + (folder.LastErrors == 1 ? " error" : " errors"); row.Kind = "cloud"; }
-                    else { row.Status = "Linked"; row.Kind = "same"; SetSynced(row, folder.LastSync); }
+                    else if (folder.LastErrors > 0) { row.Status = "Attached  ·  " + folder.LastErrors + (folder.LastErrors == 1 ? " error" : " errors"); row.Kind = "cloud"; }
+                    else { row.Status = "Attached"; row.Kind = "same"; SetSynced(row, folder.LastSync); }
                     row.Modified = "";
                     row.Size = "";
                     built.Add(row);
                 }
-                info.Title = "Linked folders";
-                info.Detail = "Linked folders upload when Windows shuts down and refresh from the cloud when you sign in.";
-                info.Badge = folders.Count + " linked";
+                info.Title = "Attached folders";
+                info.Detail = "Attached folders back up when Windows shuts down and refresh from the cloud when you sign in.";
+                info.Badge = folders.Count + " attached";
                 info.Virtual = true;
                 return built;
             }
@@ -1461,7 +1510,7 @@ namespace DriveFolderSync
             info.Title = Path.GetFileName(key.TrimEnd('\\'));
             if (string.IsNullOrEmpty(info.Title)) info.Title = key;
             info.Detail = key;
-            info.Badge = "Not linked";
+            info.Badge = "Not attached";
             if (link != null)
             {
                 string remoteRoot = Store.ResolveRemote(link, found2);
@@ -1471,7 +1520,7 @@ namespace DriveFolderSync
                 if (!string.IsNullOrEmpty(linkRoot)) relBase = Store.Relative(key, linkRoot) ?? "";
                 state = Store.ReadState(Store.StatePath(link.Id));
                 string when = SyncEngine.FormatWhen(link.LastSync);
-                info.Badge = string.IsNullOrEmpty(when) ? "Linked, not synced yet" : "Synced " + when;
+                info.Badge = string.IsNullOrEmpty(when) ? "Attached, not synced yet" : "Synced " + when;
                 info.BadgeKind = "info";
                 if (string.IsNullOrEmpty(remoteRoot) || !Directory.Exists(remoteRoot))
                 {
@@ -1588,10 +1637,10 @@ namespace DriveFolderSync
             info.Detail = place.ViewingReplica ? place.ReplicaPath : place.CloudPath;
             info.Tip = "In the cloud:  " + place.CloudPath + "\r\nLocal replica:  " + place.ReplicaPath;
             info.Legend = true;
-            if (link == null) info.Badge = "Not linked yet";
+            if (link == null) info.Badge = "Not attached";
             else
             {
-                info.Badge = string.IsNullOrEmpty(when) ? "Linked, not synced yet" : "Synced " + when;
+                info.Badge = string.IsNullOrEmpty(when) ? "Attached, not synced yet" : "Synced " + when;
                 info.BadgeKind = "info";
                 if (!place.Provider.IsOnline || !Directory.Exists(place.ReplicaPath))
                 {
@@ -1841,14 +1890,14 @@ namespace DriveFolderSync
             {
                 if (!localSide && loadError != null) blank.Set(Glyphs.Warning, "This folder isn't available", loadError);
                 else if (query.Length > 0) blank.Set(Glyphs.Search, "No items match \u201C" + query + "\u201D", "Check the spelling, or clear the search to see everything in this folder.");
-                else if (!localSide && current == "vfs:linked") blank.Set(Glyphs.Link, "No linked folders yet", "Open a folder on a drive, then choose Link folder. Linked folders upload when Windows shuts down and refresh when you sign in.");
+                else if (!localSide && current == "vfs:linked") blank.Set(Glyphs.Link, "No attached folders yet", "Choose Attach folder to back up a folder from this PC. Attached folders back up when Windows shuts down and refresh when you sign in.");
                 else if (!localSide && IsRealPath(driveKey) && !Directory.Exists(driveKey))
                     blank.Set(Glyphs.Warning, "Cloud folder isn't available", "Check the drive connection. If this folder was moved or trashed, restore it and refresh.");
                 else if (localSide && !string.IsNullOrEmpty(localKey) && localKey != "vfs:replicas" && !Directory.Exists(localKey))
                     blank.Set(Glyphs.SaveLocal, "Nothing copied here yet", "Drag folders or files from the drive. They keep the same path.");
                 else if (localSide && string.IsNullOrEmpty(localKey))
                     blank.Set(Glyphs.Link, "Attach a local folder", "Choose any folder on this PC. Its files stay where they are and back up to the selected drive.");
-                else blank.Set(Glyphs.FolderOpen, "This folder is empty", localSide ? "Drag files or folders here from the drive." : "Drag files or folders here from the local replica.");
+                else blank.Set(Glyphs.FolderOpen, "This folder is empty", localSide ? "Drag files or folders here from the drive." : "Drag files or folders here from the local folder.");
             }
             blank.Visible = show;
             PlaceEmpty(view, blank);
@@ -2107,7 +2156,7 @@ namespace DriveFolderSync
             string dest = DropFolder(target, e);
             if (string.IsNullOrEmpty(dest))
             {
-                ShowAction("Drop onto a folder on the drive or the local replica.", "warn");
+                ShowAction("Drop onto a folder inside the selected folder pair.", "warn");
                 return;
             }
             StartTransfer(target == localList, dest, sources);
@@ -2156,7 +2205,7 @@ namespace DriveFolderSync
                 {
                     listMenu.Items.Add(new ToolStripSeparator());
                     listMenu.Items.Add(MenuItem("Local replica", Glyphs.SaveLocal, new EventHandler(Replica_Click)));
-                    if (selected.Count == 1 && first.IsDir) listMenu.Items.Add(MenuItem("Link folder", Glyphs.Link, new EventHandler(Link_Click)));
+                    if (selected.Count == 1 && first.IsDir) listMenu.Items.Add(MenuItem("Attach folder…", Glyphs.Link, new EventHandler(Link_Click)));
                 }
             }
             else
@@ -2168,7 +2217,7 @@ namespace DriveFolderSync
                     listMenu.Items.Add(MenuItem("Open in File Explorer", Glyphs.OpenLocal, delegate { ShowInExplorer(path); }));
                     listMenu.Items.Add(MenuItem("Copy path", Glyphs.Copy, delegate { CopyPath(path); }));
                     listMenu.Items.Add(new ToolStripSeparator());
-                    listMenu.Items.Add(MenuItem("Link this folder", Glyphs.Link, new EventHandler(Link_Click)));
+                    listMenu.Items.Add(MenuItem("Attach this folder…", Glyphs.Link, new EventHandler(Link_Click)));
                 }
             }
             string syncPath = sourceList == localList ? localKey : driveKey;
@@ -2191,7 +2240,7 @@ namespace DriveFolderSync
                 treeMenu.Items.Add(MenuItem("Open in File Explorer", Glyphs.OpenLocal, delegate { ShowInExplorer(path); }));
                 treeMenu.Items.Add(MenuItem("Copy path", Glyphs.Copy, delegate { CopyPath(path); }));
                 treeMenu.Items.Add(new ToolStripSeparator());
-                treeMenu.Items.Add(MenuItem("Link this folder", Glyphs.Link, new EventHandler(Link_Click)));
+                treeMenu.Items.Add(MenuItem("Attach this folder…", Glyphs.Link, new EventHandler(Link_Click)));
             }
             AddSyncItems(treeMenu, path);
         }
@@ -2203,7 +2252,7 @@ namespace DriveFolderSync
             if (folder == null) return;
             menu.Items.Add(new ToolStripSeparator());
             ToolStripMenuItem pull = MenuItem("Refresh from cloud", Glyphs.Download, delegate { RunSyncId("Pull", folder.Id); });
-            ToolStripMenuItem push = MenuItem("Upload to cloud", Glyphs.Upload, delegate { RunSyncId("Push", folder.Id); });
+            ToolStripMenuItem push = MenuItem("Back up to cloud", Glyphs.Upload, delegate { RunSyncId("Push", folder.Id); });
             pull.Enabled = !busy;
             push.Enabled = !busy;
             menu.Items.Add(pull);
@@ -2309,12 +2358,12 @@ namespace DriveFolderSync
                         {
                             if (link.Partial) continue;
                             if (string.Equals(Store.Norm(link.Local), Store.Norm(localRoot), StringComparison.OrdinalIgnoreCase))
-                                throw new InvalidOperationException("This replica is already linked as a whole folder. Stop syncing it before choosing individual files.");
+                                throw new InvalidOperationException("This replica is already attached as a whole folder. Remove that attachment before choosing individual files.");
                         }
                         SyncEngine.MaterializeSelection(cloudRoot, localRoot, choice.Dirs, choice.Files);
                         LinkFolder saved = SyncEngine.RememberSelection(choice.Provider.Id, localRoot, choice.Dirs, choice.Files);
                         if (saved == null || !saved.Partial)
-                            throw new InvalidOperationException("This replica is already linked as a whole folder. Stop syncing it before choosing individual files.");
+                            throw new InvalidOperationException("This replica is already attached as a whole folder. Remove that attachment before choosing individual files.");
                         copied += choice.Files.Count;
                         made += choice.Dirs.Count;
                         if (choice.RootSelected) made++;
@@ -2324,19 +2373,23 @@ namespace DriveFolderSync
                 catch (Exception ex) { error = ex.Message; }
                 int copiedFiles = copied;
                 int madeFolders = made;
-                BeginInvoke(new Action(delegate
+                try
                 {
-                    SetBusy(false, null);
-                    BuildTree();
-                    if (!string.IsNullOrEmpty(openPath)) Navigate(openPath, true);
-                    else LoadCurrent();
-                    if (error != null)
+                    BeginInvoke(new Action(delegate
                     {
-                        ShowAction("The local replica wasn't created", "cloud");
-                        Dialogs.Error(this, "Couldn't create the local replica", error);
-                    }
-                    else ShowAction("Copied " + Plural(copiedFiles, "file") + " and created " + Plural(madeFolders, "folder"), "same");
-                }));
+                        SetBusy(false, null);
+                        BuildTree();
+                        if (!string.IsNullOrEmpty(openPath)) Navigate(openPath, true);
+                        else LoadCurrent();
+                        if (error != null)
+                        {
+                            ShowAction("The local replica wasn't created", "cloud");
+                            Dialogs.Error(this, "Couldn't create the local replica", error);
+                        }
+                        else ShowAction("Copied " + Plural(copiedFiles, "file") + " and created " + Plural(madeFolders, "folder"), "same");
+                    }));
+                }
+                catch (InvalidOperationException) { }
             });
         }
 
@@ -2360,7 +2413,7 @@ namespace DriveFolderSync
             string path = SelectedDirectory();
             if (string.IsNullOrEmpty(path))
             {
-                Dialogs.Info(this, "Choose a folder to link", "Open a folder in a drive, or a folder on this PC, then choose Link folder.");
+                Dialogs.Info(this, "Choose a folder to attach", "Open or select a folder, then choose Attach folder.");
                 return;
             }
             OfferLink(path);
@@ -2413,7 +2466,7 @@ namespace DriveFolderSync
             if (busy) return;
             if (folder == null)
             {
-                Dialogs.Info(this, "This folder isn't linked", "Only linked folders can stop syncing. Open a linked folder, then try again.");
+                Dialogs.Info(this, "This folder isn't attached", "Open an attached folder or select it in the folder picker, then try again.");
                 return;
             }
             string remote = Store.ResolveRemote(folder, Store.DetectProviders());
@@ -2435,6 +2488,27 @@ namespace DriveFolderSync
                 dialog.ShowNewFolderButton = false;
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 string root = dialog.SelectedPath;
+                string problem = null;
+                if (string.Equals(Store.Norm(root), Store.Norm(Path.GetPathRoot(Path.GetFullPath(root))), StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(Path.GetPathRoot(Path.GetFullPath(root)), Path.GetPathRoot(Environment.SystemDirectory), StringComparison.OrdinalIgnoreCase))
+                    problem = "The Windows drive itself can't be a cloud drive. Choose the folder your cloud desktop app syncs.";
+                foreach (Provider existing in Store.DetectProviders())
+                {
+                    if (problem != null) break;
+                    if (Store.IsUnder(root, existing.Root) || Store.IsUnder(existing.Root, root))
+                        problem = "This folder overlaps " + existing.Name + " (" + existing.Root + "), which is already a cloud drive.";
+                }
+                foreach (LinkFolder folder in Store.ReadLinks())
+                {
+                    if (problem != null) break;
+                    if (Store.IsUnder(root, folder.Local) || Store.IsUnder(folder.Local, root))
+                        problem = "This folder overlaps the attached local folder " + folder.Local + ". To back up a local folder, use Attach folder instead.";
+                }
+                if (problem != null)
+                {
+                    Dialogs.Error(this, "Couldn't add this cloud drive", problem);
+                    return;
+                }
                 Provider provider = new Provider();
                 provider.Root = Store.Norm(root);
                 provider.Name = new DirectoryInfo(root).Name;
@@ -2443,7 +2517,12 @@ namespace DriveFolderSync
                 if (provider.Name.IndexOf("onedrive", StringComparison.OrdinalIgnoreCase) >= 0) provider.Kind = "OneDrive";
                 provider.Detail = provider.Root;
                 provider.Id = provider.Kind.ToLowerInvariant() + ":" + provider.Root.ToLowerInvariant();
-                Store.SaveCustomProvider(provider);
+                try { using (SyncEngine.LockState(30)) Store.SaveCustomProvider(provider); }
+                catch (Exception ex)
+                {
+                    Dialogs.Error(this, "Couldn't add this cloud drive", ex.Message);
+                    return;
+                }
                 BuildTree();
                 Navigate(provider.Root, true);
                 ShowAction("Added " + provider.Name, "same");
@@ -2456,17 +2535,33 @@ namespace DriveFolderSync
             Process.Start(new ProcessStartInfo("explorer.exe", Store.Root) { UseShellExecute = true });
         }
 
+        void ViewLog_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (!File.Exists(Store.LogFile)) Store.Log("log opened");
+                Process.Start(new ProcessStartInfo("notepad.exe", "\"" + Store.LogFile + "\"") { UseShellExecute = true });
+            }
+            catch (Exception ex) { Dialogs.Error(this, "Couldn't open the sync log", ex.Message); }
+        }
+
         void About_Click(object sender, EventArgs e)
         {
             Dialogs.Info(this, "Drive Folder Sync " + Store.Version,
-                "The drive is on the left and the local replica is on the right. Drag files or folders either way. A dropped folder keeps its contents and the same path.\r\n\r\n"
-                + "Green status: changed on this PC since the last sync.\r\nRed status: changed in the cloud, or changed on both sides.\r\n\r\n"
-                + "Linked folders refresh when you sign in and upload when Windows shuts down.");
+                "Choose a cloud drive tab, then attach a local folder from any drive. The cloud folder is on the left and the attached local folder is on the right. Drag files or folders between them to copy them to the same path.\r\n\r\n"
+                + "Attached folders refresh from the cloud when you sign in and back up when Windows shuts down. Deleting a local file keeps its cloud copy. "
+                + "Deleting files in the cloud never deletes them on this PC.\r\n\r\n"
+                + "Green status: changed on this PC since the last sync.\r\nRed status: changed in the cloud, or changed on both sides.");
         }
 
         void SetBusy(bool on, string message)
         {
             busy = on;
+            if (!on && closeWhenIdle)
+            {
+                BeginInvoke(new Action(Close));
+                return;
+            }
             progress.Visible = on;
             Cursor = on ? Cursors.AppStarting : Cursors.Default;
             if (on) ShowAction(message, "none");
@@ -2487,7 +2582,7 @@ namespace DriveFolderSync
                 LinkFolder folder = CurrentLink();
                 if (folder == null)
                 {
-                    Dialogs.Info(this, "Link this folder first", "Only linked folders refresh from or upload to the cloud. Open the folder, then choose Link folder.");
+                    Dialogs.Info(this, "Attach this folder first", "Only attached folders refresh from or back up to the cloud. Choose Attach folder to pair a local folder with a cloud folder.");
                     return;
                 }
                 id = folder.Id;
@@ -2516,24 +2611,28 @@ namespace DriveFolderSync
                             {
                                 if (string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase)) folder = item;
                             }
-                            if (folder == null) throw new InvalidOperationException("That linked folder is gone.");
+                            if (folder == null) throw new InvalidOperationException("That attached folder was removed.");
                             stats = SyncEngine.SyncLink(folder, direction, false);
                             Store.SaveLinks(all);
                         }
                     }
                 }
                 catch (Exception ex) { error = ex.Message; }
-                BeginInvoke(new Action(delegate
+                try
                 {
-                    SetBusy(false, null);
-                    if (error != null)
+                    BeginInvoke(new Action(delegate
                     {
-                        ShowAction("Sync didn't finish", "cloud");
-                        Dialogs.Error(this, "Sync didn't finish", error);
-                    }
-                    else if (stats != null) ShowAction(Summary(stats), stats.Errors > 0 ? "cloud" : stats.Conflict > 0 ? "warn" : "same");
-                    LoadCurrent();
-                }));
+                        SetBusy(false, null);
+                        if (error != null)
+                        {
+                            ShowAction("Sync didn't finish", "cloud");
+                            Dialogs.Error(this, "Sync didn't finish", error);
+                        }
+                        else if (stats != null) ShowAction(Summary(stats), stats.Errors > 0 ? "cloud" : stats.Conflict > 0 ? "warn" : "same");
+                        LoadCurrent();
+                    }));
+                }
+                catch (InvalidOperationException) { }
             });
         }
 
@@ -2555,7 +2654,9 @@ namespace DriveFolderSync
 
         void RestoreWindow()
         {
-            Dictionary<string, object> saved = Store.ReadObject(WindowStatePath);
+            Dictionary<string, object> saved;
+            try { saved = Store.ReadObject(WindowStatePath); }
+            catch (IOException) { return; }
             if (saved == null) return;
             Rectangle bounds = new Rectangle(Store.GetInt(saved, "x"), Store.GetInt(saved, "y"), Store.GetInt(saved, "width"), Store.GetInt(saved, "height"));
             if (bounds.Width >= MinimumSize.Width && bounds.Height >= MinimumSize.Height)
@@ -2597,6 +2698,7 @@ namespace DriveFolderSync
         readonly TextField localBox = new TextField('\0', false, "Local folder");
         readonly TextField cloudBox = new TextField('\0', false, "Cloud folder");
         readonly Label cloudHint = new Label();
+        readonly ToolTip tips = new ToolTip();
         readonly Panel error = new Panel();
         readonly List<Provider> providers;
 
@@ -2669,7 +2771,7 @@ namespace DriveFolderSync
             y = FieldLabel("Cloud folder", pad, y);
             cloudBox.SetBounds(pad, y, boxWidth, Theme.S(32));
             cloudBox.Box.Text = relative ?? "";
-            cloudBox.Box.TextChanged += new EventHandler(delegate { HideError(); });
+            cloudBox.Box.TextChanged += new EventHandler(delegate { HideError(); UpdateCloudHint(); });
             Controls.Add(cloudBox);
             FlatButton cloudBrowse = new FlatButton("Browse\u2026", false);
             cloudBrowse.Location = new Point(pad + boxWidth + Theme.S(8), y);
@@ -2715,6 +2817,7 @@ namespace DriveFolderSync
             AcceptButton = ok;
             CancelButton = cancel;
             ClientSize = new Size(width, y + footer.Height);
+            Disposed += delegate { tips.Dispose(); };
             UpdateCloudHint();
             ActiveControl = drives.SelectedItem == null ? (Control)drives : ok;
         }
@@ -2762,7 +2865,20 @@ namespace DriveFolderSync
         void UpdateCloudHint()
         {
             Provider provider = drives.SelectedItem as Provider;
-            cloudHint.Text = provider == null ? "Choose a drive first." : "Inside " + provider.Root + ". A new folder will be created for your backup.";
+            if (provider == null)
+            {
+                cloudHint.Text = "Choose a drive first.";
+                return;
+            }
+            string relative = cloudBox.Box.Text.Trim().Trim('\\');
+            string target = provider.Root;
+            try { target = Path.Combine(provider.Root, relative); }
+            catch (ArgumentException) { }
+            string shown = provider.Name + (relative.Length > 0 ? "\\" + relative : "");
+            cloudHint.Text = Directory.Exists(target)
+                ? "Uses the existing folder " + shown + ". Files that differ are kept on both sides for review."
+                : "Creates the folder " + shown + " for this backup.";
+            tips.SetToolTip(cloudHint, cloudHint.Text);
         }
 
         void ShowError(string message)

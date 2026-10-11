@@ -70,6 +70,31 @@ namespace DriveFolderSync
             if (!seen || !correct) throw new Exception("remove confirmation targeted the wrong local/cloud attachment");
         }
 
+        // Runs an action that opens a message dialog, answers it, and returns the dialog heading.
+        static string AnswerNext(bool confirm, Action action)
+        {
+            string heading = null;
+            using (System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer())
+            {
+                timer.Interval = 50;
+                timer.Tick += delegate
+                {
+                    Form prompt = null;
+                    foreach (Form open in Application.OpenForms) if (open is MessageDialog) { prompt = open; break; }
+                    if (prompt == null) return;
+                    timer.Stop();
+                    foreach (Control control in prompt.Controls)
+                        if (control is Label && control.Font == Theme.Heading) heading = control.Text;
+                    if (confirm) prompt.AcceptButton.PerformClick();
+                    else prompt.CancelButton.PerformClick();
+                };
+                timer.Start();
+                action();
+                timer.Stop();
+            }
+            return heading;
+        }
+
         static void Capture(Form form, string path)
         {
             using (Bitmap bitmap = new Bitmap(form.Width, form.Height))
@@ -155,8 +180,24 @@ namespace DriveFolderSync
                         dialog.Show(form);
                         Application.DoEvents();
                         Capture(dialog, Path.Combine(output, "attach-folder.png"));
+                        if (!((Label)Field(dialog, "cloudHint")).Text.StartsWith("Creates the folder Project Cloud\\Backups\\new-project"))
+                            throw new Exception("attach dialog did not describe the new cloud folder");
+                        ((TextField)Field(dialog, "cloudBox")).Box.Text = @"Backups\project-documents";
+                        if (!((Label)Field(dialog, "cloudHint")).Text.StartsWith("Uses the existing folder"))
+                            throw new Exception("attach dialog did not identify the existing cloud folder");
                         dialog.Close();
                     }
+                    File.WriteAllText(Path.Combine(local, "Brief.txt"), "Local edit");
+                    string replacePrompt = AnswerNext(false, delegate
+                    {
+                        form.GetType().GetMethod("StartPairTransfer", BindingFlags.Instance | BindingFlags.NonPublic)
+                            .Invoke(form, new object[] { true, local, new string[] { Path.Combine(cloud, "Brief.txt") } });
+                    });
+                    if (replacePrompt == null || !replacePrompt.StartsWith("Replace"))
+                        throw new Exception("dropping onto an existing file did not ask before replacing it");
+                    if (File.ReadAllText(Path.Combine(local, "Brief.txt")) != "Local edit" || (bool)Field(form, "busy"))
+                        throw new Exception("canceling the replace prompt still copied the file");
+                    File.WriteAllText(Path.Combine(local, "Brief.txt"), "Project brief");
                     string trash = Path.Combine(drive.Root, "Trash simulation");
                     Directory.CreateDirectory(trash);
                     Directory.Move(Path.Combine(cloud, "Notes"), Path.Combine(trash, "Notes"));

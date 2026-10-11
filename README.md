@@ -6,7 +6,7 @@ Back up folders from any local drive to Google Drive, OneDrive, Dropbox, or anot
 
 ## Install
 
-Download [DriveFolderSyncSetup.exe](https://github.com/sb-git-cs/drive-folder-sync/releases/latest) and run it. Installation is for the current user. The app starts at sign-in and adds **Link folder for sync** to the folder right-click menu (under **Show more options** on Windows 11). Existing installations can use **Reinstall**. The installed program is in `%LOCALAPPDATA%\DriveFolderSync`.
+Download [DriveFolderSyncSetup.exe](https://github.com/sb-git-cs/drive-folder-sync/releases/latest) and run it. Installation is for the current user. The app starts at sign-in and adds **Attach to Drive Folder Sync** to the folder right-click menu (under **Show more options** on Windows 11). Existing installations can use **Reinstall**. The installed program is in `%LOCALAPPDATA%\DriveFolderSync`. Remove it from **Settings → Apps → Installed apps** or from **… → Uninstall** in the app; your files and settings are kept.
 
 The cloud provider’s desktop app must be installed and its folder or mounted drive available. Detected Google Drive, OneDrive and Dropbox accounts appear as tabs. **Add cloud drive** registers the folder used by another cloud desktop client. Choose **Attach folder** for a local folder you want to back up. A local backup folder added as a drive will be rejected as a source; right-click its unused drive tab and choose **Remove added cloud drive** to correct the saved entry. Files are kept.
 
@@ -19,7 +19,7 @@ For example, pair **D:\project-documents** with **Google Drive\project-documents
 3. Keep the suggested cloud folder name, enter a different name, or browse to an existing cloud folder.
 4. Choose **Attach & back up**. A new destination is created and the initial backup starts.
 
-The local folder stays in its original location. Each drive can have several folder pairs; select one from the picker above the local pane. The panes follow the same relative path inside that pair. **Backup to cloud**, **Refresh from cloud**, and drag-and-drop target the selected pair. Differing files in an existing destination are retained and marked for review during initial attachment.
+The local folder stays in its original location. Each drive can have several folder pairs; select one from the picker above the local pane. The panes follow the same relative path inside that pair. **Back up to cloud**, **Refresh from cloud**, and drag-and-drop target the selected pair. Dropping onto a name that already exists asks before replacing it. Differing files in an existing destination are retained and marked for review during initial attachment.
 
 **Local replica** remains available for selecting individual cloud files and directories into the existing `Work Drive` structure. Existing attachments and partial selections continue to work. A selected directory creates its structure; a selected file copies that file. Dropping a directory between paired panes copies its contents.
 
@@ -29,12 +29,12 @@ The local folder stays in its original location. Each drive can have several fol
 - **At shutdown or sign-out:** local changes back up to the cloud folder.
 - **After local deletion:** the cloud backup stays. The cloud pane highlights it as **Only in cloud**. The next sign-in refresh downloads it again.
 - **After cloud trash or a move:** once the cloud desktop client removes the original path, browsing or pressing **F5** shows **Missing in the cloud** without a synced timestamp. Restore the folder in the cloud and refresh to see it again.
-- **After cloud deletion:** the existing sync rules still remove an unchanged tracked local copy. Local edits and pending uploads are protected.
+- **After cloud deletion:** nothing is deleted on this PC. The local copy stays and is shown as **Missing in the cloud**. Drive Folder Sync never deletes local files; delete them yourself if you no longer need them.
 - **When both sides change:** conflict handling preserves versions. Unreadable scans stop sync rather than treating files as deleted.
 
 Green statuses indicate new or changed local files. Red statuses indicate cloud changes, cloud-only files, or conflicts. **Last synced** records successful sync activity rather than the file’s modification date. Status describes the mounted provider folder; the provider’s desktop app handles online upload. Keep that app running for cloud transfer.
 
-**Sync all** backs up or refreshes every attachment. Right-click an attached local or cloud folder and choose **Remove synced folder**. The confirmation shows both paths; removing the attachment stops its automatic backup and refresh and keeps files on both sides. **Stop syncing this folder** in the **…** menu performs the same action. Logs are available from the **…** menu.
+**Sync all** backs up or refreshes every attachment. Right-click an attached local or cloud folder and choose **Remove synced folder**. The confirmation shows both paths; removing the attachment stops its automatic backup and refresh and keeps files on both sides. **Stop syncing this folder** in the **…** menu performs the same action. **… → View sync log** shows what each sync did, including errors.
 
 ## Automatic updates
 

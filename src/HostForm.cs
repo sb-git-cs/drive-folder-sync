@@ -130,7 +130,7 @@ namespace DriveFolderSync
             if (shuttingDown) return;
             shuttingDown = true;
             Store.Log("shutdown sync starting");
-            ShutdownBlockReasonCreate(Handle, "Uploading linked cloud folders");
+            ShutdownBlockReasonCreate(Handle, "Backing up attached folders to the cloud");
             try
             {
                 DateTime until = DateTime.UtcNow.AddSeconds(20);
