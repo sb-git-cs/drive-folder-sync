@@ -73,11 +73,12 @@ namespace DriveFolderSync
         public int Del;
         public int Conflict;
         public int Errors;
+        public int Links;
     }
 
     public class Store
     {
-        public const string Version = "1.5.0";
+        public const string Version = "1.5.1";
         static readonly object LogGate = new object();
         static string rootOverride;
         static string logOverride;

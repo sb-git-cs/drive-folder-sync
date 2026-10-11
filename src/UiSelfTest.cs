@@ -10,6 +10,21 @@ namespace DriveFolderSync
 {
     public static class UiSelfTest
     {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern int GetWindowLong(IntPtr window, int index);
+
+        static void NoSideScroll(MainForm form, string when)
+        {
+            foreach (string name in new string[] { "list", "localList" })
+            {
+                FileList view = (FileList)Field(form, name);
+                if ((GetWindowLong(view.Handle, -16) & 0x00100000) == 0) continue;
+                List<string> widths = new List<string>();
+                foreach (ColumnHeader column in view.Columns) widths.Add(column.Width.ToString());
+                throw new Exception(name + " needs a horizontal scrollbar " + when + ": client=" + view.ClientSize.Width + " columns=" + string.Join(",", widths.ToArray()));
+            }
+        }
+
         static object Field(object target, string name)
         {
             return target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
@@ -159,6 +174,7 @@ namespace DriveFolderSync
                     if (selectedPair.SelectedIndex != 1 || string.IsNullOrEmpty(selectedPair.Text))
                         throw new Exception("folder selector has no selected text: index=" + selectedPair.SelectedIndex);
                     selectedPair.Refresh();
+                    NoSideScroll(form, "at the default size");
                     Capture(form, Path.Combine(output, "folder-pair.png"));
                     Navigate(form, Path.Combine(local, "Notes"));
                     if ((string)Field(form, "driveKey") != Path.Combine(cloud, "Notes")) throw new Exception("local navigation did not follow the paired cloud path");
@@ -171,7 +187,8 @@ namespace DriveFolderSync
                     if (((SplitContainer)Field(form, "split")).Top != ((SplitContainer)Field(form, "localSplit")).Top)
                         throw new Exception("paired file panes were not aligned");
                     form.Size = Theme.S(980, 560);
-                    Application.DoEvents();
+                    WaitForLoad(form);
+                    NoSideScroll(form, "at the minimum size");
                     Capture(form, Path.Combine(output, "compact.png"));
                     using (LinkDialog dialog = new LinkDialog(Store.DetectProviders(), drive, local, @"Backups\new-project"))
                     {

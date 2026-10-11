@@ -104,6 +104,13 @@ namespace DriveFolderSync
 
         public static List<FileRecord> ListFiles(string root)
         {
+            return ListFiles(root, null);
+        }
+
+        // Symbolic links and junctions are never followed. Their relative paths are added to
+        // links so the caller can keep both sides of the pair away from them.
+        public static List<FileRecord> ListFiles(string root, List<string> links)
+        {
             List<FileRecord> list = new List<FileRecord>();
             if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) return list;
             string rootFull = Store.Norm(root);
@@ -119,7 +126,12 @@ namespace DriveFolderSync
                 {
                     bool isDir = (child.Attributes & FileAttributes.Directory) != 0;
                     if (SkipName(child.Name, isDir)) continue;
-                    if (IsRedirect(child.FullName, child.Attributes)) throw new IOException("Sync cannot follow symbolic links or junctions: " + child.FullName);
+                    if (IsRedirect(child.FullName, child.Attributes))
+                    {
+                        string linkRel = RelativeTo(child.FullName, rootFull);
+                        if (links != null && linkRel != null) links.Add(linkRel);
+                        continue;
+                    }
                     if (isDir)
                     {
                         stack.Push(child.FullName);
@@ -127,11 +139,8 @@ namespace DriveFolderSync
                     }
                     FileInfo info = child as FileInfo;
                     if (info == null) continue;
-                    string rel = info.FullName;
-                    if (rel.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) rel = @"\\" + rel.Substring(8);
-                    else if (rel.StartsWith(@"\\?\", StringComparison.Ordinal)) rel = rel.Substring(4);
-                    if (rel.Length < rootFull.Length) continue;
-                    rel = rel.Substring(rootFull.Length).TrimStart('\\');
+                    string rel = RelativeTo(info.FullName, rootFull);
+                    if (rel == null) continue;
                     FileRecord record = new FileRecord();
                     record.Rel = rel;
                     record.Full = info.FullName;
@@ -141,6 +150,37 @@ namespace DriveFolderSync
                 }
             }
             return list;
+        }
+
+        static string RelativeTo(string full, string rootFull)
+        {
+            string rel = full;
+            if (rel.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) rel = @"\\" + rel.Substring(8);
+            else if (rel.StartsWith(@"\\?\", StringComparison.Ordinal)) rel = rel.Substring(4);
+            if (rel.Length < rootFull.Length) return null;
+            return rel.Substring(rootFull.Length).TrimStart('\\');
+        }
+
+        static bool UnderAny(string rel, Dictionary<string, bool> roots)
+        {
+            if (roots == null || roots.Count == 0) return false;
+            string current = rel;
+            while (!string.IsNullOrEmpty(current))
+            {
+                if (roots.ContainsKey(current)) return true;
+                int slash = current.LastIndexOf('\\');
+                if (slash < 0) return false;
+                current = current.Substring(0, slash);
+            }
+            return false;
+        }
+
+        static void DropUnder(Dictionary<string, FileRecord> files, Dictionary<string, bool> roots)
+        {
+            if (roots.Count == 0) return;
+            List<string> drop = new List<string>();
+            foreach (string rel in files.Keys) if (UnderAny(rel, roots)) drop.Add(rel);
+            foreach (string rel in drop) files.Remove(rel);
         }
 
         public static Dictionary<string, FileRecord> Index(List<FileRecord> files)
@@ -268,6 +308,11 @@ namespace DriveFolderSync
 
         public static int MirrorDirectories(string cloud, string local)
         {
+            return MirrorDirectories(cloud, local, null);
+        }
+
+        static int MirrorDirectories(string cloud, string local, Dictionary<string, bool> links)
+        {
             if (string.IsNullOrEmpty(cloud) || !Directory.Exists(cloud)) return 0;
             if (string.IsNullOrEmpty(local)) return 0;
             Directory.CreateDirectory(local);
@@ -290,8 +335,8 @@ namespace DriveFolderSync
                 foreach (DirectoryInfo dir in dirs)
                 {
                     if (SkipName(dir.Name, true)) continue;
-                    if (IsRedirect(dir.FullName, dir.Attributes)) throw new IOException("Sync cannot follow symbolic links or junctions: " + dir.FullName);
                     string child = string.IsNullOrEmpty(rel) ? dir.Name : rel + "\\" + dir.Name;
+                    if (UnderAny(child, links) || IsRedirect(dir.FullName, dir.Attributes)) continue;
                     stack.Push(child);
                 }
             }
@@ -412,6 +457,7 @@ namespace DriveFolderSync
 
             Dictionary<string, FileRecord> localFiles;
             Dictionary<string, FileRecord> remoteFiles;
+            Dictionary<string, bool> links = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
             if (onlyFiles != null)
             {
                 localFiles = IndexAllowed(local, onlyFiles);
@@ -419,13 +465,23 @@ namespace DriveFolderSync
             }
             else
             {
-                localFiles = Index(ListFiles(local));
-                remoteFiles = Index(ListFiles(remote));
+                // A link on either side is left alone, and nothing is copied into or through it.
+                List<string> localLinks = new List<string>();
+                List<string> remoteLinks = new List<string>();
+                localFiles = Index(ListFiles(local, localLinks));
+                remoteFiles = Index(ListFiles(remote, remoteLinks));
+                foreach (string rel in localLinks) links[rel] = true;
+                foreach (string rel in remoteLinks) links[rel] = true;
+                DropUnder(localFiles, links);
+                DropUnder(remoteFiles, links);
+                stats.Links = links.Count;
+                if (links.Count > 0)
+                    Store.Log("skipped " + links.Count + " symbolic links or junctions in " + local + ": " + string.Join(", ", new List<string>(links.Keys).ToArray()));
             }
             Dictionary<string, Snap> state = Store.ReadState(statePath);
             if (onlyFiles != null) DropKeys(state, AllowSet(onlyFiles));
-            else if (direction == "Push") MirrorDirectories(local, remote);
-            else MirrorDirectories(remote, local);
+            else if (direction == "Push") MirrorDirectories(local, remote, links);
+            else MirrorDirectories(remote, local, links);
 
             if (direction == "Push")
             {
@@ -703,6 +759,7 @@ namespace DriveFolderSync
                         total.Del += stats.Del;
                         total.Conflict += stats.Conflict;
                         total.Errors += stats.Errors;
+                        total.Links += stats.Links;
                     }
                     catch (Exception ex)
                     {

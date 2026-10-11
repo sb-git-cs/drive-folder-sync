@@ -31,6 +31,7 @@ The local folder stays in its original location. Each drive can have several fol
 - **After cloud trash or a move:** once the cloud desktop client removes the original path, browsing or pressing **F5** shows **Missing in the cloud** without a synced timestamp. Restore the folder in the cloud and refresh to see it again.
 - **After cloud deletion:** nothing is deleted on this PC. The local copy stays and is shown as **Missing in the cloud**. Drive Folder Sync never deletes local files; delete them yourself if you no longer need them.
 - **When both sides change:** conflict handling preserves versions. Unreadable scans stop sync rather than treating files as deleted.
+- **Symbolic links and junctions:** these are skipped, and the rest of the folder is backed up. Nothing is copied into or through a link. Attach the link's target folder separately if it needs a backup.
 
 Green statuses indicate new or changed local files. Red statuses indicate cloud changes, cloud-only files, or conflicts. **Last synced** records successful sync activity rather than the file’s modification date. Status describes the mounted provider folder; the provider’s desktop app handles online upload. Keep that app running for cloud transfer.
 

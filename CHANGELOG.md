@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1
+
+- A symbolic link or junction inside an attached folder no longer stops the backup with "Sync cannot follow symbolic links or junctions". The link is skipped and everything else is backed up. Nothing is copied into or through a link in either direction, and the sync summary shows how many linked folders were skipped.
+- File lists no longer show a horizontal scrollbar. Columns shrink to fit the pane, and **Date modified** and **Last synced** are hidden when there isn't room for them. A column you resize keeps its width when space allows.
+
 ## 1.5.0
 
 Safer syncing and a more consistent app.

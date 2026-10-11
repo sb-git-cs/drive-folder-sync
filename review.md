@@ -1,3 +1,10 @@
+# Review — 1.5.1
+
+## Bug fixes in 1.5.1
+
+- A junction inside an attached folder aborted the initial backup and every sign-in refresh with "Sync cannot follow symbolic links or junctions". The owner hit this with D:\project-documents\…\prototype, a junction into a git repository. Sync now skips links on either side and drops the matching paths on the other side, so it neither follows a link nor writes through one. Folder mirroring skips them too. Attaching a folder whose path is itself a link is still rejected. Covered by /selftest: push skips the junction and backs up its siblings, and pull doesn't write into the junction target.
+- File lists showed a horizontal scrollbar at the default window size, because the fixed columns needed about 630 px and each pane is about 455 px. Columns now shrink to their minimums and then hide Last synced and Date modified. Fitting is deferred until the list control has applied its new size; otherwise a stale scrollbar stayed after a resize. /uitest asserts there is no horizontal scrollbar at the default and minimum sizes.
+
 # Review — 1.5.0
 
 ## Blocker — resolved in 1.5.0
@@ -66,7 +73,7 @@ No unresolved blocker or should-fix findings remain in the implemented change.
 ## Validation
 
 - Windows/.NET Framework build passed.
-- /selftest passed: folder mappings, retention/restoration, initial conflicts, rapid edits, simultaneous edits, unavailable roots, denied scans, junction rejection, partial selections, updater versions/settings/checksums.
+- /selftest passed: folder mappings, retention/restoration, initial conflicts, rapid edits, simultaneous edits, unavailable roots, denied scans, junction skipping, partial selections, updater versions/settings/checksums.
 - /uitest passed: paired roots, cloud-only highlighting, horizontal tabs, folder selection, paired navigation and compact layout. Native window previews inspected in dist/ui-check.
 - git diff --check passed.
 - Tests use isolated folders. An actual Windows shutdown and a live installation of an online update were not performed; lifecycle sync operations and update validation were exercised independently.

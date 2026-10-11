@@ -388,9 +388,19 @@ namespace DriveFolderSync
                     rejected = false;
                     try { SyncEngine.Link(junction, attachedProvider.Id, "junction-copy"); } catch (ArgumentException) { rejected = true; }
                     if (!rejected) throw new Exception("junction attachment was accepted");
-                    rejected = false;
-                    try { SyncEngine.SyncFolder("Push", existingLocal, existingCloud, failedState, true); } catch (IOException) { rejected = true; }
-                    if (!rejected) throw new Exception("sync followed a junction outside its paired folder");
+                    File.WriteAllText(Path.Combine(junctionTarget, "outside.txt"), "outside");
+                    File.WriteAllText(Path.Combine(existingLocal, "beside-link.txt"), "beside");
+                    SyncStats linked = SyncEngine.SyncFolder("Push", existingLocal, existingCloud, failedState, true);
+                    if (linked.Links != 1) throw new Exception("backup did not report the skipped junction");
+                    if (!File.Exists(Path.Combine(existingCloud, "beside-link.txt"))) throw new Exception("a junction stopped the rest of the backup");
+                    if (Directory.Exists(Path.Combine(existingCloud, "redirected"))) throw new Exception("backup followed a junction outside its paired folder");
+                    Directory.CreateDirectory(Path.Combine(existingCloud, "redirected"));
+                    File.WriteAllText(Path.Combine(existingCloud, "redirected", "into-link.txt"), "cloud");
+                    linked = SyncEngine.SyncFolder("Pull", existingLocal, existingCloud, failedState, true);
+                    if (linked.Links != 1 || File.Exists(Path.Combine(junctionTarget, "into-link.txt")))
+                        throw new Exception("refresh wrote through a junction outside its paired folder");
+                    Directory.Delete(Path.Combine(existingCloud, "redirected"), true);
+                    File.Delete(Path.Combine(existingCloud, "beside-link.txt"));
                 }
                 finally { Directory.Delete(junction); }
 

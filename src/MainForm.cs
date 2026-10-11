@@ -586,6 +586,7 @@ namespace DriveFolderSync
             view.Columns.Add("Size", Theme.S(80), HorizontalAlignment.Right);
             view.Columns.Add("Date modified", Theme.S(130));
             view.Columns.Add("Last synced", Theme.S(130));
+            foreach (ColumnHeader column in view.Columns) column.Tag = column.Width;
             view.DrawColumnHeader += new DrawListViewColumnHeaderEventHandler(delegate(object sender, DrawListViewColumnHeaderEventArgs e) { e.DrawDefault = true; });
             view.DrawItem += new DrawListViewItemEventHandler(List_DrawItem);
             view.DrawSubItem += new DrawListViewSubItemEventHandler(List_DrawSubItem);
@@ -609,10 +610,19 @@ namespace DriveFolderSync
                     UpdateStatus();
                 }));
             });
-            view.Resize += new EventHandler(delegate { FitColumns(view); PlaceEmpty(view, blank); });
+            view.Resize += new EventHandler(delegate
+            {
+                // Resize arrives before the list control applies its new size, so columns fitted
+                // now would leave a stale horizontal scrollbar.
+                if (view.IsHandleCreated) view.BeginInvoke(new Action(delegate { FitColumns(view); }));
+                PlaceEmpty(view, blank);
+            });
             view.ColumnWidthChanged += new ColumnWidthChangedEventHandler(delegate(object sender, ColumnWidthChangedEventArgs e)
             {
-                if (e.ColumnIndex != 0) FitColumns(view);
+                if (e.ColumnIndex == 0 || sizingColumns) return;
+                int width = view.Columns[e.ColumnIndex].Width;
+                if (width > 0) view.Columns[e.ColumnIndex].Tag = width;
+                FitColumns(view);
             });
             view.ContextMenuStrip = listMenu;
             view.Controls.Add(blank);
@@ -1960,10 +1970,43 @@ namespace DriveFolderSync
             sizingColumns = true;
             try
             {
+                // Narrow panes shrink the detail columns toward their minimums, then hide the
+                // rightmost ones, so the list never needs a horizontal scrollbar.
+                int count = view.Columns.Count;
+                int[] minimum = new int[] { Theme.S(170), Theme.S(124), Theme.S(56), Theme.S(116), Theme.S(116) };
+                int[] wanted = new int[count];
+                int[] widths = new int[count];
+                for (int i = 1; i < count; i++)
+                {
+                    wanted[i] = view.Columns[i].Tag is int ? (int)view.Columns[i].Tag : view.Columns[i].Width;
+                    if (i < minimum.Length) wanted[i] = Math.Max(wanted[i], minimum[i]);
+                }
+                int available = view.ClientSize.Width;
+                int shown = count;
+                int floor = minimum[0];
+                for (int i = 1; i < count; i++) floor += i < minimum.Length ? minimum[i] : wanted[i];
+                while (shown > 2 && floor > available)
+                {
+                    shown--;
+                    floor -= shown < minimum.Length ? minimum[shown] : wanted[shown];
+                }
+                int slack = Math.Max(0, available - floor);
+                int growth = 0;
+                for (int i = 1; i < shown; i++) growth += wanted[i] - (i < minimum.Length ? minimum[i] : wanted[i]);
                 int others = 0;
-                for (int i = 1; i < view.Columns.Count; i++) others += view.Columns[i].Width;
-                int width = Math.Max(Theme.S(140), view.ClientSize.Width - others);
-                if (view.Columns[0].Width != width) view.Columns[0].Width = width;
+                for (int i = 1; i < count; i++)
+                {
+                    if (i >= shown) continue;
+                    int least = i < minimum.Length ? minimum[i] : wanted[i];
+                    int extra = growth <= 0 ? 0 : (int)((long)(wanted[i] - least) * Math.Min(slack, growth) / growth);
+                    widths[i] = least + extra;
+                    others += widths[i];
+                }
+                widths[0] = Math.Max(Theme.S(120), available - others);
+                for (int i = 0; i < count; i++)
+                {
+                    if (view.Columns[i].Width != widths[i]) view.Columns[i].Width = widths[i];
+                }
             }
             finally { sizingColumns = false; }
         }
@@ -2643,6 +2686,7 @@ namespace DriveFolderSync
             if (stats.Down > 0) parts.Add(stats.Down + " downloaded");
             if (stats.Conflict > 0) parts.Add(Plural(stats.Conflict, "conflict"));
             if (stats.Errors > 0) parts.Add(Plural(stats.Errors, "error"));
+            if (stats.Links > 0) parts.Add(Plural(stats.Links, "linked folder") + " skipped");
             if (parts.Count == 0) return "Sync finished  ·  everything is up to date";
             return "Sync finished  ·  " + string.Join("  ·  ", parts.ToArray());
         }
