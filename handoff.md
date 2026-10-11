@@ -1,15 +1,15 @@
 # Team handoff
 
 ## Objective
-Version 1.4.1: show only cloud drives on the horizontal bar and prevent missing or trashed cloud items from appearing synced. Existing sync and deletion behavior remains as released in 1.4.0.
+Version 1.4.2: right-click removal of attached synced folders, targeting the clicked attachment and preserving local/cloud files. Diagnose conflicting cloud roots and allow removal of unused manually added drive registrations.
 
 ## Baseline
-Started from clean main/origin/main 3661c35 (released v1.4.0).
+Started from clean main/origin/main ac6d64e (released v1.4.1).
 
 ## Assignments
 | Agent | Assignment | Status |
 | --- | --- | --- |
-| Codex | Fix missing-cloud statuses and cloud tabs; review, build/test and publish patch release | Complete; validated locally, publication uses the main-branch release workflow |
+| Codex | Implement and review right-click attachment removal; validate and publish patch release | Complete; validated locally, publication uses the main-branch release workflow |
 
 ## Validation and delivery
-Final local build, sync self-test, native UI self-test and diff checks passed. Sync and native UI regressions include moving cloud files, subfolders and an entire attached root out of their paired paths. Detection uses mounted provider folders; live cloud APIs are not queried. See review.md for findings and validation limits. The main-branch build workflow runs both test suites before publishing the installer.
+Final local build, sync self-test, native UI self-test and diff checks passed. Native UI regressions cover local/cloud folder context menus, overview and tree actions, cancellation, disabling during sync, removing the chosen attachment and preserving both copies. See review.md for review evidence. The main-branch build workflow runs sync and UI test suites before publishing the installer.

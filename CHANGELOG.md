@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.2
+
+- Right-click an attached local or cloud folder and choose **Remove synced folder** to stop its automatic backup and refresh. Local and cloud files are kept.
+- Removal is available in folder lists, the attached-folder overview and folder trees. The confirmation identifies the entire attachment and both paths.
+- Context-menu sync actions use the right-clicked folder instead of another selected or active pair. Removal is disabled during sync.
+- Attachment errors identify the configured cloud root that contains the local source and wrap long explanations. **Add cloud drive** is distinguished from **Attach folder**.
+- Unused local folders mistakenly added as cloud drives can have their saved registrations removed by right-clicking their drive tabs. Files are kept, and entries with attachments must be unlinked first.
+- Native UI tests cover cancellation, correct attachment targeting, busy-state disabling, preserving both copies after removal, and recovery from a local folder mistakenly added as a cloud drive.
+
 ## 1.4.1
 
 - The horizontal bar contains only cloud drives; Overview and Attached folders remain accessible through navigation.

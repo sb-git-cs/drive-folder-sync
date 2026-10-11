@@ -280,7 +280,7 @@ namespace DriveFolderSync
             uploadButton = Command("Backup to cloud", Glyphs.Upload, "Upload this linked folder to the cloud", delegate { RunSync("Push", true); });
             replicaButton = Command("Local replica", Glyphs.SaveLocal, "Copy only the selected folders and files to this PC", new EventHandler(Replica_Click));
             linkButton = Command("Attach folder", Glyphs.Link, "Back up a folder from any location on this PC", new EventHandler(AttachFolder_Click));
-            ToolStripButton addDrive = Command("Add drive", Glyphs.MapDrive, "Add a OneDrive, Dropbox, or other cloud folder on this PC", new EventHandler(AddDrive_Click));
+            ToolStripButton addDrive = Command("Add cloud drive", Glyphs.MapDrive, "Choose the folder used by your cloud desktop app. Use Attach folder for local backups.", new EventHandler(AddDrive_Click));
 
             syncAllButton = new ToolStripDropDownButton("Sync all");
             Style(syncAllButton, Glyphs.Sync, "Refresh or upload every linked folder");
@@ -2171,7 +2171,9 @@ namespace DriveFolderSync
                     listMenu.Items.Add(MenuItem("Link this folder", Glyphs.Link, new EventHandler(Link_Click)));
                 }
             }
-            AddSyncItems(listMenu);
+            string syncPath = sourceList == localList ? localKey : driveKey;
+            if (selected.Count == 1 && selected[0].IsDir) syncPath = selected[0].FullPath;
+            AddSyncItems(listMenu, syncPath);
             if (listMenu.Items.Count > 0 && listMenu.Items[listMenu.Items.Count - 1] is ToolStripSeparator)
                 listMenu.Items.RemoveAt(listMenu.Items.Count - 1);
             e.Cancel = listMenu.Items.Count == 0;
@@ -2180,29 +2182,36 @@ namespace DriveFolderSync
         void TreeMenu_Opening(object sender, CancelEventArgs e)
         {
             treeMenu.Items.Clear();
+            TreeView sourceTree = treeMenu.SourceControl as TreeView;
+            NodeTag selected = sourceTree == null || sourceTree.SelectedNode == null ? null : sourceTree.SelectedNode.Tag as NodeTag;
+            string path = selected == null ? current : selected.Key;
             treeMenu.Items.Add(MenuItem("Refresh", Glyphs.Refresh, delegate { RefreshAll(); }));
-            if (IsRealPath(current) && Directory.Exists(current))
+            if (IsRealPath(path) && Directory.Exists(path))
             {
-                string path = current;
                 treeMenu.Items.Add(MenuItem("Open in File Explorer", Glyphs.OpenLocal, delegate { ShowInExplorer(path); }));
                 treeMenu.Items.Add(MenuItem("Copy path", Glyphs.Copy, delegate { CopyPath(path); }));
                 treeMenu.Items.Add(new ToolStripSeparator());
                 treeMenu.Items.Add(MenuItem("Link this folder", Glyphs.Link, new EventHandler(Link_Click)));
             }
-            AddSyncItems(treeMenu);
+            AddSyncItems(treeMenu, path);
         }
 
-        void AddSyncItems(ContextMenuStrip menu)
+        void AddSyncItems(ContextMenuStrip menu, string path)
         {
-            if (CurrentLink() == null) return;
+            if (!IsRealPath(path)) return;
+            LinkFolder folder = SyncEngine.FindLink(path, Store.ReadLinks());
+            if (folder == null) return;
             menu.Items.Add(new ToolStripSeparator());
-            ToolStripMenuItem pull = MenuItem("Refresh from cloud", Glyphs.Download, delegate { RunSync("Pull", true); });
-            ToolStripMenuItem push = MenuItem("Upload to cloud", Glyphs.Upload, delegate { RunSync("Push", true); });
+            ToolStripMenuItem pull = MenuItem("Refresh from cloud", Glyphs.Download, delegate { RunSyncId("Pull", folder.Id); });
+            ToolStripMenuItem push = MenuItem("Upload to cloud", Glyphs.Upload, delegate { RunSyncId("Push", folder.Id); });
             pull.Enabled = !busy;
             push.Enabled = !busy;
             menu.Items.Add(pull);
             menu.Items.Add(push);
-            menu.Items.Add(MenuItem("Stop syncing", Glyphs.Cancel, new EventHandler(Unlink_Click)));
+            ToolStripMenuItem remove = MenuItem("Remove synced folder", Glyphs.Cancel, delegate { RemoveSyncedFolder(folder); });
+            remove.Enabled = !busy;
+            remove.ToolTipText = "Stop syncing " + folder.Local + ". Local and cloud files are kept.";
+            menu.Items.Add(remove);
         }
 
         sealed class ReplicaChoice
@@ -2396,17 +2405,23 @@ namespace DriveFolderSync
 
         void Unlink_Click(object sender, EventArgs e)
         {
-            string path = SelectedDirectory();
-            if (string.IsNullOrEmpty(path)) path = current;
-            LinkFolder folder = CurrentLink();
+            RemoveSyncedFolder(CurrentLink());
+        }
+
+        void RemoveSyncedFolder(LinkFolder folder)
+        {
+            if (busy) return;
             if (folder == null)
             {
                 Dialogs.Info(this, "This folder isn't linked", "Only linked folders can stop syncing. Open a linked folder, then try again.");
                 return;
             }
-            if (!Dialogs.Confirm(this, "Stop syncing this folder?", folder.Local + "\r\n\r\nThe files stay on disk. They will no longer upload when Windows shuts down or refresh when you sign in.", null, "Stop syncing", MessageKind.Warning))
+            string remote = Store.ResolveRemote(folder, Store.DetectProviders());
+            string details = "Local: " + folder.Local + "\r\nCloud: " + (remote ?? folder.RemoteRelative);
+            if (!Dialogs.Confirm(this, "Remove this synced folder?", details + "\r\n\r\nThis removes the entire folder attachment. Local and cloud files are kept. Automatic backup and sign-in refresh stop for this attachment.", null, "Remove from sync", MessageKind.Warning))
                 return;
-            SyncEngine.Unlink(folder.Id);
+            try { SyncEngine.Unlink(folder.Id); }
+            catch (Exception ex) { Dialogs.Error(this, "Couldn't remove synced folder", ex.Message); return; }
             BuildTree();
             LoadCurrent();
             ShowAction("Stopped syncing " + Path.GetFileName(folder.Local.TrimEnd('\\')), "same");
@@ -2416,7 +2431,7 @@ namespace DriveFolderSync
         {
             using (FolderBrowserDialog dialog = new FolderBrowserDialog())
             {
-                dialog.Description = "Choose a OneDrive, Dropbox, or other cloud folder on this PC";
+                dialog.Description = "Choose the folder used by your cloud desktop app, such as Google Drive\\My Drive or OneDrive. To back up a local folder, use Attach folder.";
                 dialog.ShowNewFolderButton = false;
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 string root = dialog.SelectedPath;
@@ -2616,7 +2631,7 @@ namespace DriveFolderSync
                 Theme.Body, Theme.TextMuted, pad, y, field);
             y += help.Height + Theme.S(20);
 
-            y = FieldLabel("Drive", pad, y);
+            y = FieldLabel("Cloud drive", pad, y);
             drives.DropDownStyle = ComboBoxStyle.DropDownList;
             drives.DrawMode = DrawMode.OwnerDrawFixed;
             drives.ItemHeight = Theme.S(26);
@@ -2675,7 +2690,7 @@ namespace DriveFolderSync
             {
                 int size = Theme.S(14);
                 Theme.DrawGlyph(e.Graphics, Glyphs.Warning, size, Theme.CloudText, 0, (error.Height - size) / 2);
-                Theme.DrawText(e.Graphics, error.Text, Theme.Body, new Rectangle(size + Theme.S(8), 0, error.Width - size - Theme.S(8), error.Height), Theme.CloudText, TextFormatFlags.Left);
+                TextRenderer.DrawText(e.Graphics, error.Text, Theme.Body, new Rectangle(size + Theme.S(8), 0, error.Width - size - Theme.S(8), error.Height), Theme.CloudText, TextFormatFlags.Left | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
             });
             Controls.Add(error);
             y += error.Height + Theme.S(12);
@@ -2753,6 +2768,10 @@ namespace DriveFolderSync
         void ShowError(string message)
         {
             error.Text = message;
+            int textWidth = error.Width - Theme.S(22);
+            int height = Math.Max(Theme.S(24), TextRenderer.MeasureText(message, Theme.Body, new Size(textWidth, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix).Height + Theme.S(4));
+            ClientSize = new Size(ClientSize.Width, ClientSize.Height + height - error.Height);
+            error.Height = height;
             error.Visible = true;
             error.Invalidate();
             System.Media.SystemSounds.Beep.Play();
@@ -2761,6 +2780,8 @@ namespace DriveFolderSync
         void HideError()
         {
             error.Visible = false;
+            ClientSize = new Size(ClientSize.Width, ClientSize.Height + Theme.S(24) - error.Height);
+            error.Height = Theme.S(24);
         }
 
         void BrowseCloud(object sender, EventArgs e)

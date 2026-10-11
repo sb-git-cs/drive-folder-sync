@@ -1,4 +1,19 @@
-# Review — 1.4.1
+# Review — 1.4.2
+
+## Should-fix — resolved in 1.4.2
+
+- Context actions depended on the focused list and current pair, omitting removal from virtual attachment lists or choosing the wrong attachment. List and tree context menus now resolve the source control and selected path, then capture the attachment ID for each action. Evidence: src/MainForm.cs:2174, src/MainForm.cs:2185 and src/MainForm.cs:2199.
+- Removing a sync attachment was not disabled during active UI sync and unlink failures could escape the handler. Removal now has a busy guard, handles errors and identifies the entire attachment plus both paths in confirmation. Evidence: src/MainForm.cs:2411.
+
+- The generic local-source rejection hid which configured cloud root was responsible; a mistakenly added local folder had no UI recovery. Validation now names the root, the dialog wraps the explanation, and unused manually added drive tabs can remove their registration without deleting files. Evidence: src/SyncEngine.cs:871, src/MainForm.cs:2768 and src/FolderPairs.cs:95. Linked drives are protected by a check under the sync mutex.
+
+## Validation — 1.4.2
+
+- Native UI regression passed: removal from the local overview with the opposite pane focused; cloud-folder removal; tree context action; confirmation cancellation; disabled action during sync; removal of only the selected pair; local/cloud files preserved.
+- UI regression also reproduces an erroneous local-folder drive registration, verifies the root is visible in the error, protects a drive with attachments, cancels/removes an unused drive entry, and confirms that the local folder then validates for attachment. Native error-dialog preview inspected.
+- Final build, full sync test and diff check are recorded in handoff.md. Tests operate on isolated folders.
+
+## Prior review — 1.4.1
 
 ## Should-fix — resolved in 1.4.1
 

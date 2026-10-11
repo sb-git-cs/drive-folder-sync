@@ -34,6 +34,42 @@ namespace DriveFolderSync
             Application.DoEvents();
         }
 
+        static ToolStripMenuItem RemoveItem(Control source, string text = "Remove synced folder")
+        {
+            ContextMenuStrip menu = source.ContextMenuStrip;
+            menu.Show(source, new Point(10, 10));
+            Application.DoEvents();
+            ToolStripMenuItem found = null;
+            foreach (ToolStripItem item in menu.Items)
+                if (item.Text == text) found = item as ToolStripMenuItem;
+            menu.Close();
+            return found;
+        }
+
+        static void AnswerRemoval(ToolStripMenuItem item, string local, string cloud, bool confirm)
+        {
+            bool seen = false, correct = false;
+            using (System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer())
+            {
+                timer.Interval = 50;
+                timer.Tick += delegate
+                {
+                    Form prompt = null;
+                    foreach (Form open in Application.OpenForms) if (open is MessageDialog) { prompt = open; break; }
+                    if (prompt == null) return;
+                    timer.Stop();
+                    seen = true;
+                    foreach (Control control in prompt.Controls)
+                        if (control is Label && control.Text.Contains(local) && control.Text.Contains(cloud)) correct = true;
+                    if (correct && confirm) prompt.AcceptButton.PerformClick();
+                    else prompt.CancelButton.PerformClick();
+                };
+                timer.Start();
+                item.PerformClick();
+            }
+            if (!seen || !correct) throw new Exception("remove confirmation targeted the wrong local/cloud attachment");
+        }
+
         static void Capture(Form form, string path)
         {
             using (Bitmap bitmap = new Bitmap(form.Width, form.Height))
@@ -155,6 +191,96 @@ namespace DriveFolderSync
                     if (attachment.Status != "Missing in the cloud" || attachment.Kind == "same" || !string.IsNullOrEmpty(attachment.LastSynced))
                         throw new Exception("attached-folder overview showed a trashed cloud folder as synced");
                     if (!File.Exists(Path.Combine(local, "Brief.txt"))) throw new Exception("browsing trashed cloud folder changed local files");
+                    string secondLocal = Path.Combine(sandbox, "Second project");
+                    Directory.CreateDirectory(secondLocal);
+                    File.WriteAllText(Path.Combine(secondLocal, "Keep.txt"), "Keep both copies");
+                    LinkFolder second = SyncEngine.Link(secondLocal, drive.Id, @"Backups\second-project");
+                    SyncEngine.SyncLink(second, "Push", true);
+                    string secondCloud = Store.ResolveRemote(second, Store.DetectProviders());
+                    Store.SaveLinks(new List<LinkFolder> { pair, second });
+                    Navigate(form, "vfs:pc");
+                    foreach (ListViewItem item in right.Items) item.Selected = ((Row)item.Tag).FullPath == secondLocal;
+                    left.Focus(); // The context-menu source must win over the focused pane.
+                    ToolStripMenuItem remove = RemoveItem(right);
+                    if (remove == null || !remove.Enabled) throw new Exception("attached local folder has no remove context action");
+                    AnswerRemoval(remove, secondLocal, secondCloud, false);
+                    if (Store.ReadLinks().Count != 2 || !File.Exists(Store.StatePath(second.Id)))
+                        throw new Exception("canceling removal changed the attachment");
+                    Navigate(form, local);
+                    TreeView localFolders = (TreeView)Field(form, "localTree");
+                    remove = RemoveItem(localFolders);
+                    if (remove == null) throw new Exception("attached local tree has no remove context action");
+                    AnswerRemoval(remove, local, cloud, false);
+                    TreeView cloudFolders = (TreeView)Field(form, "tree");
+                    List<TreeNode> nodes = new List<TreeNode>();
+                    foreach (TreeNode node in cloudFolders.Nodes) nodes.Add(node);
+                    TreeNode secondNode = null;
+                    for (int i = 0; i < nodes.Count; i++)
+                    {
+                        NodeTag tag = nodes[i].Tag as NodeTag;
+                        if (tag != null && tag.Key == secondCloud) secondNode = nodes[i];
+                        foreach (TreeNode child in nodes[i].Nodes) nodes.Add(child);
+                    }
+                    if (secondNode == null) throw new Exception("second cloud attachment is missing from the tree");
+                    form.GetType().GetField("suppressTree", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, true);
+                    cloudFolders.SelectedNode = secondNode;
+                    form.GetType().GetField("suppressTree", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, false);
+                    remove = RemoveItem(cloudFolders);
+                    if (remove == null) throw new Exception("attached cloud tree has no remove context action");
+                    AnswerRemoval(remove, secondLocal, secondCloud, false);
+                    form.GetType().GetField("busy", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, true);
+                    remove = RemoveItem(localFolders);
+                    if (remove == null || remove.Enabled) throw new Exception("removal is enabled during sync");
+                    form.GetType().GetField("busy", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, false);
+                    Navigate(form, Path.GetDirectoryName(secondCloud));
+                    foreach (ListViewItem item in left.Items) item.Selected = ((Row)item.Tag).FullPath == secondCloud;
+                    remove = RemoveItem(left);
+                    if (remove == null) throw new Exception("attached cloud folder has no remove context action");
+                    AnswerRemoval(remove, secondLocal, secondCloud, true);
+                    WaitForLoad(form);
+                    List<LinkFolder> remaining = Store.ReadLinks();
+                    if (remaining.Count != 1 || remaining[0].Id != pair.Id || File.Exists(Store.StatePath(second.Id)))
+                        throw new Exception("removal did not detach only the right-clicked attachment");
+                    if (!File.Exists(Path.Combine(secondLocal, "Keep.txt")) || !File.Exists(Path.Combine(secondCloud, "Keep.txt")))
+                        throw new Exception("removal deleted local or cloud files");
+                    if (RemoveItem(left) != null) throw new Exception("unlinked folder still has a remove sync action");
+                    string mistakenRoot = Path.Combine(sandbox, "Local backup folder");
+                    Directory.CreateDirectory(mistakenRoot);
+                    File.WriteAllText(Path.Combine(mistakenRoot, "Local.txt"), "Preserve local documents");
+                    Provider mistaken = new Provider();
+                    mistaken.Id = "ui:mistaken"; mistaken.Name = "Local backup folder"; mistaken.Kind = "Folder"; mistaken.Root = mistakenRoot;
+                    Store.SaveCustomProvider(mistaken);
+                    form.GetType().GetMethod("RefreshAll", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
+                    WaitForLoad(form);
+                    Button mistakenTab = null, attachedTab = null;
+                    foreach (Button tab in tabs.Controls)
+                    {
+                        if ((string)tab.Tag == mistaken.Id) mistakenTab = tab;
+                        if ((string)tab.Tag == drive.Id) attachedTab = tab;
+                    }
+                    remove = RemoveItem(attachedTab, "Remove added cloud drive");
+                    if (remove == null || remove.Enabled) throw new Exception("drive with synced attachments can be removed");
+                    using (LinkDialog dialog = new LinkDialog(Store.DetectProviders(), drive, mistakenRoot, "new-backup"))
+                    {
+                        dialog.StartPosition = FormStartPosition.Manual; dialog.Location = new Point(-32000, -32000);
+                        dialog.Show(form);
+                        dialog.AcceptButton.PerformClick();
+                        Control error = (Control)Field(dialog, "error");
+                        if (!error.Visible || !error.Text.Contains(mistakenRoot) || error.Height <= Theme.S(24))
+                            throw new Exception("attachment conflict did not identify and display the configured root");
+                        Capture(dialog, Path.Combine(output, "attachment-conflict.png"));
+                        dialog.Close();
+                    }
+                    remove = RemoveItem(mistakenTab, "Remove added cloud drive");
+                    if (remove == null || !remove.Enabled) throw new Exception("unused added drive has no removal action");
+                    AnswerRemoval(remove, mistakenRoot, mistakenRoot, false);
+                    if (Store.FindProvider(Store.DetectProviders(), mistaken.Id) == null) throw new Exception("cancel removed the added drive");
+                    AnswerRemoval(remove, mistakenRoot, mistakenRoot, true);
+                    WaitForLoad(form);
+                    if (Store.FindProvider(Store.DetectProviders(), mistaken.Id) != null || !File.Exists(Path.Combine(mistakenRoot, "Local.txt")))
+                        throw new Exception("removing drive registration failed or removed local files");
+                    SyncEngine.ValidateLink(mistakenRoot, drive.Id, "new-backup", Store.ReadLinks());
+                    if (Store.ReadLinks().Count != 1) throw new Exception("removing unused drive changed existing attachments");
                     form.Close();
                 }
                 File.WriteAllText(Path.Combine(output, "result.txt"), "UI self-test passed");

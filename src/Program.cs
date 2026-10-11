@@ -6,8 +6,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Drive Folder Sync")]
 [assembly: AssemblyProduct("Drive Folder Sync")]
-[assembly: AssemblyVersion("1.4.1.0")]
-[assembly: AssemblyFileVersion("1.4.1.0")]
+[assembly: AssemblyVersion("1.4.2.0")]
+[assembly: AssemblyFileVersion("1.4.2.0")]
 
 namespace DriveFolderSync
 {

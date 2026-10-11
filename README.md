@@ -8,7 +8,7 @@ Back up folders from any local drive to Google Drive, OneDrive, Dropbox, or anot
 
 Download [DriveFolderSyncSetup.exe](https://github.com/sb-git-cs/drive-folder-sync/releases/latest) and run it. Installation is for the current user. The app starts at sign-in and adds **Link folder for sync** to the folder right-click menu (under **Show more options** on Windows 11). Existing installations can use **Reinstall**. The installed program is in `%LOCALAPPDATA%\DriveFolderSync`.
 
-The cloud provider’s desktop app must be installed and its folder or mounted drive available. Detected Google Drive, OneDrive and Dropbox accounts appear as tabs. **Add drive** attaches another cloud folder.
+The cloud provider’s desktop app must be installed and its folder or mounted drive available. Detected Google Drive, OneDrive and Dropbox accounts appear as tabs. **Add cloud drive** registers the folder used by another cloud desktop client. Choose **Attach folder** for a local folder you want to back up. A local backup folder added as a drive will be rejected as a source; right-click its unused drive tab and choose **Remove added cloud drive** to correct the saved entry. Files are kept.
 
 ## Attach any local folder
 
@@ -34,7 +34,7 @@ The local folder stays in its original location. Each drive can have several fol
 
 Green statuses indicate new or changed local files. Red statuses indicate cloud changes, cloud-only files, or conflicts. **Last synced** records successful sync activity rather than the file’s modification date. Status describes the mounted provider folder; the provider’s desktop app handles online upload. Keep that app running for cloud transfer.
 
-**Sync all** backs up or refreshes every attachment. **Stop syncing this folder** unlinks the selected pair and leaves files on both sides. Logs are available from the **…** menu.
+**Sync all** backs up or refreshes every attachment. Right-click an attached local or cloud folder and choose **Remove synced folder**. The confirmation shows both paths; removing the attachment stops its automatic backup and refresh and keeps files on both sides. **Stop syncing this folder** in the **…** menu performs the same action. Logs are available from the **…** menu.
 
 ## Automatic updates
 

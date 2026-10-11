@@ -72,7 +72,43 @@ namespace DriveFolderSync
             tab.FlatAppearance.BorderColor = Theme.Border;
             tab.Click += delegate { Navigate(key, true); };
             tips.SetToolTip(tab, key.StartsWith("vfs:") ? title : key);
+            foreach (Dictionary<string, object> entry in Store.GetObjectList(Store.ReadConfig(), "customProviders"))
+            {
+                if (Store.GetString(entry, "id") != id || Store.GetString(entry, "kind") != "Folder") continue;
+                ContextMenuStrip menu = new ContextMenuStrip();
+                ToolStripMenuItem remove = MenuItem("Remove added cloud drive", Glyphs.Cancel, delegate { RemoveAddedDrive(id, key); });
+                menu.Items.Add(remove);
+                menu.Opening += delegate
+                {
+                    bool attached = false;
+                    foreach (LinkFolder folder in Store.ReadLinks()) if (folder.ProviderId == id) attached = true;
+                    remove.Enabled = !busy && !attached;
+                    remove.ToolTipText = attached ? "Remove this drive's synced folder attachments first." : "Remove this saved drive entry. Files are kept.";
+                };
+                tab.ContextMenuStrip = menu;
+                tab.Disposed += delegate { menu.Dispose(); };
+                break;
+            }
             driveTabs.Controls.Add(tab);
+        }
+
+        void RemoveAddedDrive(string id, string root)
+        {
+            if (busy) return;
+            if (!Dialogs.Confirm(this, "Remove this added cloud drive?", root + "\r\n\r\nOnly the saved drive entry is removed. All files are kept. Local folders to back up belong under Attach folder.", null, "Remove drive", MessageKind.Warning)) return;
+            try
+            {
+                using (SyncEngine.LockState(60))
+                {
+                    foreach (LinkFolder folder in Store.ReadLinks())
+                        if (folder.ProviderId == id) throw new InvalidOperationException("Remove this drive's synced folder attachments first.");
+                    Store.RemoveCustomProvider(id);
+                }
+            }
+            catch (Exception ex) { Dialogs.Error(this, "Couldn't remove added cloud drive", ex.Message); return; }
+            BuildTree();
+            Navigate("vfs:pc", true);
+            ShowAction("Removed added cloud drive", "same");
         }
 
         void SelectDriveTab()

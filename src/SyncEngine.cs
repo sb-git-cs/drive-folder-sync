@@ -868,10 +868,14 @@ namespace DriveFolderSync
             if (!Store.IsUnder(remote, provider.Root)) throw new ArgumentException("The cloud folder must stay inside the selected drive.");
             RejectReparsePath(local);
             RejectReparsePath(remote);
+            foreach (Provider drive in Store.DetectProviders())
+                if (Store.IsUnder(local, drive.Root))
+                    throw new ArgumentException("The local folder is inside a configured cloud drive: " + drive.Root
+                        + (drive.Kind == "Folder"
+                            ? ". If this is a local backup folder, remove its added drive tab and use Attach folder with your actual cloud drive."
+                            : ". Choose a folder outside this cloud drive for local backups."));
             if (Store.IsUnder(local, remote) || Store.IsUnder(remote, local))
                 throw new ArgumentException("Local and cloud folders must be separate and cannot contain each other.");
-            foreach (Provider drive in Store.DetectProviders())
-                if (Store.IsUnder(local, drive.Root)) throw new ArgumentException("Choose a local folder outside your cloud drives.");
             foreach (LinkFolder existing in links)
             {
                 string other = Store.ResolveRemote(existing, Store.DetectProviders());

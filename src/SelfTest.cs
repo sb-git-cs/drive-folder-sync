@@ -260,7 +260,8 @@ namespace DriveFolderSync
                 try { SyncEngine.Link(Path.Combine(root, "escape-local"), attachedProvider.Id, @"..\outside-provider"); } catch (ArgumentException) { rejected = true; }
                 if (!rejected) throw new Exception("cloud path traversal was accepted");
                 rejected = false;
-                try { SyncEngine.Link(Path.Combine(providerRoot, "inside"), attachedProvider.Id, "elsewhere"); } catch (ArgumentException) { rejected = true; }
+                try { SyncEngine.Link(Path.Combine(providerRoot, "inside"), attachedProvider.Id, "elsewhere"); }
+                catch (ArgumentException ex) { rejected = ex.Message.Contains(providerRoot); }
                 if (!rejected) throw new Exception("a cloud folder was accepted as the local root");
                 rejected = false;
                 try { SyncEngine.Link("relative-folder", attachedProvider.Id, "relative-destination"); } catch (ArgumentException) { rejected = true; }
