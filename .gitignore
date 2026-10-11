@@ -1,0 +1,7 @@
+dist/
+*.user
+.vs/
+*.suo
+build.rsp
+csc-args.txt
+app.ico
