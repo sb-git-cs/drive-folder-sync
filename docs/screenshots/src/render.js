@@ -168,7 +168,7 @@ const setup = page(`
     <img src="${appIcon}" style="width:56px;height:56px;border-radius:12px;box-shadow:0 6px 16px rgba(0,0,0,.25)">
     <div><div style="color:#fff;font-size:25px;font-weight:600;letter-spacing:-.02em">Drive Folder Sync</div>
       <div style="color:#d6e8fa;margin-top:4px">Keep the folders you choose in sync with Google Drive, OneDrive, and Dropbox</div></div>
-    <div style="position:absolute;right:16px;top:12px;color:#bed7f2;font-size:11.5px">Version 1.3.0</div></div>
+    <div style="position:absolute;right:16px;top:12px;color:#bed7f2;font-size:11.5px">Version 1.3.1</div></div>
   <div style="padding:24px 32px 0;flex:1">
     <div style="font-weight:600">Drives found on this PC</div>
     <div style="margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:4px">
