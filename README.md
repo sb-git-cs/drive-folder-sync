@@ -2,61 +2,72 @@
 
 # Drive Folder Sync
 
-Drive Folder Sync is a File Explorer for the folders you keep on Google Drive, OneDrive, Dropbox, or any other cloud folder on this PC. The drive stays on the left. Its local replica stays on the right.
-
-![The drive on the left and the local replica on the right](docs/screenshots/side-by-side.png)
-
-Drag a file onto the other pane and that file is copied onto the same path. Drag a folder and the folder is copied with the files inside it. Green statuses are about this PC: the item changed here or is only here. Red statuses are about the cloud: the item changed there, is only there, or changed on both sides.
-
-Signing in refreshes linked folders from the cloud. Shutting down uploads them back. Nothing is copied until you drag an item, choose **Local replica**, or link a folder. The one exception is a new folder in Desktop, Documents, Downloads, or Work Drive whose name and files match a folder on a drive. The app links that folder itself and shows a notification.
+Back up folders from any local drive to Google Drive, OneDrive, Dropbox, or another cloud folder on this PC. Select a cloud drive from the horizontal tabs, browse its data on the left, and choose an attached local folder on the right.
 
 ## Install
 
-Download [DriveFolderSyncSetup.exe](https://github.com/sb-git-cs/drive-folder-sync/releases/latest) and run it. The install is for the current user. The app starts at sign-in, and a folder's right-click menu gains **Link folder for sync** (on Windows 11, under **Show more options**). The program is stored in `%LOCALAPPDATA%\DriveFolderSync`. If a copy is already installed, choose Reinstall to update it.
+Download [DriveFolderSyncSetup.exe](https://github.com/sb-git-cs/drive-folder-sync/releases/latest) and run it. Installation is for the current user. The app starts at sign-in and adds **Link folder for sync** to the folder right-click menu (under **Show more options** on Windows 11). Existing installations can use **Reinstall**. The installed program is in `%LOCALAPPDATA%\DriveFolderSync`.
 
-<img src="docs/screenshots/setup.png" width="520" alt="Installer, listing the drives found on this PC">
+The cloud provider’s desktop app must be installed and its folder or mounted drive available. Detected Google Drive, OneDrive and Dropbox accounts appear as tabs. **Add drive** attaches another cloud folder.
 
-The installer lists the Google Drive, OneDrive, and Dropbox folders already on this PC. To use any other cloud folder, choose **Add drive** in the app.
+## Attach any local folder
 
-## The two panes
+For example, pair **D:\project-documents** with **Google Drive\project-documents**:
 
-Open a drive from This PC. Both panes follow the same folder, so a drop lands on the matching path.
+1. Select the cloud drive tab and browse to the desired backup location.
+2. Choose **Attach folder** and select `D:\project-documents`.
+3. Keep the suggested cloud folder name, enter a different name, or browse to an existing cloud folder.
+4. Choose **Attach & back up**. A new destination is created and the initial backup starts.
 
-![This PC, with each drive beside its local replica](docs/screenshots/overview.png)
+The local folder stays in its original location. Each drive can have several folder pairs; select one from the picker above the local pane. The panes follow the same relative path inside that pair. **Backup to cloud**, **Refresh from cloud**, and drag-and-drop target the selected pair. Differing files in an existing destination are retained and marked for review during initial attachment.
 
-The local copy lives in `%USERPROFILE%\Work Drive`, in one folder per drive (for example `Work Drive\alex@example.com`), with the same relative folders as the drive.
+**Local replica** remains available for selecting individual cloud files and directories into the existing `Work Drive` structure. Existing attachments and partial selections continue to work. A selected directory creates its structure; a selected file copies that file. Dropping a directory between paired panes copies its contents.
 
-- **Local replica** copies only the selection. A selected folder is created as a directory. A selected file is copied, and the parent folders are created so the path matches.
-- **Link folder** keeps a whole folder in sync. It is refreshed right away, again at each sign-in, and uploaded at shutdown.
-- A drive can be browsed as soon as it is on this PC. It joins sync after you link a folder, choose **Local replica**, or drag items between the panes.
+## Automatic backup and refresh
 
-Sync all refreshes or uploads every linked folder at once.
+- **At Windows sign-in:** available attached folders refresh from the cloud. Disconnected drives retry for up to eight minutes without blocking other drives.
+- **At shutdown or sign-out:** local changes back up to the cloud folder.
+- **After local deletion:** the cloud backup stays. The cloud pane highlights it as **Only in cloud**. The next sign-in refresh downloads it again.
+- **After cloud deletion:** the existing sync rules still remove an unchanged tracked local copy. Local edits and pending uploads are protected.
+- **When both sides change:** conflict handling preserves versions. Unreadable scans stop sync rather than treating files as deleted.
+
+Green statuses indicate new or changed local files. Red statuses indicate cloud changes, cloud-only files, or conflicts. **Last synced** records successful sync activity rather than the file’s modification date. Status describes the mounted provider folder; the provider’s desktop app handles online upload. Keep that app running for cloud transfer.
+
+**Sync all** backs up or refreshes every attachment. **Stop syncing this folder** unlinks the selected pair and leaves files on both sides. Logs are available from the **…** menu.
+
+## Automatic updates
+
+Version 1.4.0 and later check this repository’s latest stable GitHub release at each installed-app startup and Windows sign-in. Automatic download and installation are enabled by default. The installer must match the release’s SHA-256 checksum, and installation waits for active sync to finish.
+
+Use **… → Install updates automatically at startup** to change the setting, or **Check and install updates** to request a check. Network failures, incomplete releases and busy sync sessions defer the update while the current app remains usable. Existing attachments and files survive reinstalling.
 
 ## Getting around
 
-Click a part of the address bar to open it, or click the empty space to type a path. Right-click a file or folder for Open, Show in File Explorer, Copy path, and the sync commands. Uninstall, the log folder, and About are under the **...** button.
+Click an address-bar segment to navigate, or type a path. Right-click items for Open, Show in File Explorer, Copy path and sync actions.
 
 | Keys | Action |
 | --- | --- |
 | Alt+Left, Backspace | Back |
 | Alt+Right | Forward |
 | Alt+Up | Parent folder |
-| F5 | Refresh |
+| F5 | Refresh the displayed status |
 | Ctrl+F | Search this folder |
 | Ctrl+L, Alt+D | Type a path |
 | Ctrl+A | Select all |
 
-## Build
+## Build and verify
 
-64-bit Windows with .NET Framework 4.8 is enough.
+Windows with .NET Framework 4.8 is sufficient:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+.\dist\DriveFolderSyncSetup.exe /selftest
+.\dist\DriveFolderSyncSetup.exe /uitest .\dist\ui-check
 ```
 
-The installer is written to `dist\DriveFolderSyncSetup.exe`. `dist\DriveFolderSyncSetup.exe /selftest` checks the sync rules without touching your drives. The result goes to `%TEMP%\drivesync-selftest.txt`, or to a path given after `/selftest`, and the exit code is 0 when it passes.
+The installer is written to `dist\DriveFolderSyncSetup.exe`. `/selftest` checks sync, mapping and updater rules in isolated temporary folders; its exit code is 0 on success. Pass a result-file path after `/selftest` to choose its output location. `/uitest` exercises the native UI and renders previews in the given output directory without touching your linked folders.
 
-GitHub Actions builds and self-tests pull requests and pushes to `main` and `release-*`. When `main` has a version in `src\Store.cs` with no release yet, it publishes that release with the installer attached. The notes come from that version's section of [CHANGELOG.md](CHANGELOG.md).
+GitHub Actions builds and tests pull requests and pushes to `main` and `release-*`. A new version on `main` is published with its installer after checks pass. Release notes come from [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

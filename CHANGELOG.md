@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.0
+
+Attach local folders from any drive to existing or new cloud destinations. Horizontal drive tabs and a folder-pair selector make the cloud and local paths explicit.
+
+- Attaching starts an initial backup. Linked folders upload at shutdown/sign-out and refresh at Windows sign-in.
+- Local deletion retains the cloud backup, highlighted as **Only in cloud** until sign-in refresh restores it. Cloud-to-local deletion rules remain unchanged.
+- Multiple independent folder pairs are supported per drive. Existing replicas and partial selections remain compatible.
+- First-sync comparisons verify contents, preserving same-size differing files. Unreadable scans stop safely, and sync times reflect successful activity.
+- Automatic startup updates download stable GitHub releases, verify SHA-256 checksums, and wait for active sync before installation. The setting can be changed from the **…** menu.
+- Sync and native UI tests cover folder mappings, retention/restoration, failure cases and updater validation.
+
+Run the installer and choose **Reinstall** to upgrade from an older version. Automatic updates apply after version 1.4.0 is installed.
+
 ## 1.3.1
 
 The installer is now built and self-tested on GitHub Actions. The readme and screenshots are updated. Syncing is unchanged.

@@ -6,8 +6,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Drive Folder Sync")]
 [assembly: AssemblyProduct("Drive Folder Sync")]
-[assembly: AssemblyVersion("1.3.1.0")]
-[assembly: AssemblyFileVersion("1.3.1.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 namespace DriveFolderSync
 {
@@ -27,6 +27,12 @@ namespace DriveFolderSync
                     if (string.IsNullOrEmpty(result) || result.StartsWith("/"))
                         result = Path.Combine(Path.GetTempPath(), "drivesync-selftest.txt");
                     Environment.Exit(SelfTest.Run(result));
+                }
+                if (Has(args, "/uitest"))
+                {
+                    string output = ValueAfter(args, "/uitest");
+                    if (string.IsNullOrEmpty(output)) output = Path.Combine(Path.GetTempPath(), "drivesync-ui-test");
+                    Environment.Exit(UiSelfTest.Run(output));
                 }
                 if (Has(args, "/uninstall"))
                 {
@@ -54,7 +60,7 @@ namespace DriveFolderSync
             {
                 try { Store.Log("fatal: " + ex); }
                 catch { }
-                MessageBox.Show(ex.Message, "Drive Folder Sync", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (!Has(args, "/update")) MessageBox.Show(ex.Message, "Drive Folder Sync", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 

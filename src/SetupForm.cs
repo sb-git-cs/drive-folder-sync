@@ -15,6 +15,11 @@ namespace DriveFolderSync
     {
         public static void Install(bool startUi)
         {
+            using (SyncEngine.LockState(180)) InstallCore(startUi);
+        }
+
+        static void InstallCore(bool startUi)
+        {
             Store.EnsureDirs();
             string source = System.Reflection.Assembly.GetExecutingAssembly().Location;
             string dest = Store.InstallExe;

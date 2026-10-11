@@ -21,9 +21,12 @@ namespace DriveFolderSync
         readonly object gate = new object();
         readonly List<FileSystemWatcher> watchers = new List<FileSystemWatcher>();
         volatile bool pullDone;
+        volatile bool checkingUpdate;
         volatile bool inTick;
         volatile bool shuttingDown;
         DateTime pullDeadline;
+        DateTime nextPullTry;
+        readonly HashSet<string> refreshed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         Mutex hostMutex;
         bool mutexOwned;
 
@@ -92,10 +95,24 @@ namespace DriveFolderSync
             timer.Tick += new EventHandler(Timer_Tick);
             timer.Start();
             Store.Log("host ready");
+            if (Store.IsInstalledCopy() && UpdateManager.AutomaticEnabled)
+            {
+                checkingUpdate = true;
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try { if (UpdateManager.CheckAndInstall(Store.Log, delegate { return !shuttingDown && UpdateManager.AutomaticEnabled; })) shuttingDown = true; }
+                    finally { checkingUpdate = false; }
+                });
+            }
         }
 
         protected override void WndProc(ref Message m)
         {
+            if (m.Msg == 0x0016 && m.WParam == IntPtr.Zero)
+            {
+                shuttingDown = false;
+                Store.Log("shutdown canceled; automatic refresh remains active");
+            }
             if (m.Msg == 0x0011 || (m.Msg == 0x0016 && m.WParam != IntPtr.Zero))
             {
                 OnShutdown();
@@ -134,7 +151,7 @@ namespace DriveFolderSync
 
         void Timer_Tick(object sender, EventArgs e)
         {
-            if (inTick || shuttingDown) return;
+            if (inTick || shuttingDown || checkingUpdate) return;
             inTick = true;
             ThreadPool.QueueUserWorkItem(new WaitCallback(Tick));
         }
@@ -143,30 +160,38 @@ namespace DriveFolderSync
         {
             try
             {
-                if (!pullDone && !shuttingDown)
+                if (!pullDone && !shuttingDown && DateTime.Now >= nextPullTry)
                 {
-                    List<LinkFolder> links = Store.ReadLinks();
-                    bool ready = links.Count == 0;
-                    if (!ready)
+                    nextPullTry = DateTime.Now.AddSeconds(15);
+                    using (SyncEngine.LockState(120))
                     {
-                        ready = true;
+                        List<LinkFolder> links = Store.ReadLinks();
                         List<Provider> providers = Store.DetectProviders();
                         foreach (LinkFolder folder in links)
                         {
+                            if (shuttingDown || refreshed.Contains(folder.Id)) continue;
                             Provider provider = Store.FindProvider(providers, folder.ProviderId);
-                            if (provider == null || !provider.IsOnline) ready = false;
+                            if (provider == null || !provider.IsOnline) continue;
+                            try
+                            {
+                                SyncStats stats = SyncEngine.SyncLink(folder, "Pull", false);
+                                if (stats.Errors == 0) refreshed.Add(folder.Id);
+                            }
+                            catch (Exception ex)
+                            {
+                                folder.LastErrors = 1;
+                                Store.Log("boot refresh deferred for " + folder.Local + ": " + ex.Message);
+                            }
                         }
-                    }
-                    if (ready)
-                    {
-                        SyncEngine.SyncAll("Pull");
+                        Store.SaveLinks(links);
                         pullDone = true;
-                        Store.Log("boot refresh finished");
+                        foreach (LinkFolder folder in links) if (!refreshed.Contains(folder.Id)) pullDone = false;
                     }
+                    if (pullDone) Store.Log("boot refresh finished");
                     else if (DateTime.Now > pullDeadline)
                     {
                         pullDone = true;
-                        Store.Log("boot refresh skipped, a linked drive did not connect");
+                        Store.Log("boot refresh finished for available folders; unavailable folders will retry next sign-in");
                     }
                 }
                 DrainWatch();

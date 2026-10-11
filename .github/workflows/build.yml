@@ -23,6 +23,13 @@ jobs:
           if (Test-Path $result) { Get-Content $result }
           if ($p.ExitCode -ne 0) { throw "Self-test failed with exit code $($p.ExitCode)" }
 
+      - name: Native UI self-test
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'ui-check'
+          $p = Start-Process dist\DriveFolderSyncSetup.exe -ArgumentList '/uitest', $output -Wait -PassThru
+          Get-Content (Join-Path $output 'result.txt')
+          if ($p.ExitCode -ne 0) { throw "UI self-test failed with exit code $($p.ExitCode)" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: DriveFolderSyncSetup

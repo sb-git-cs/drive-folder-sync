@@ -62,6 +62,7 @@ namespace DriveFolderSync
         public string Rm;
         public bool Pending;
         public bool Hold;
+        public string Synced;
     }
 
     public class SyncStats
@@ -75,7 +76,7 @@ namespace DriveFolderSync
 
     public class Store
     {
-        public const string Version = "1.3.1";
+        public const string Version = "1.4.0";
         static readonly object LogGate = new object();
         static string rootOverride;
         static string logOverride;
@@ -187,11 +188,17 @@ namespace DriveFolderSync
             public bool ViewingReplica;
             public string CloudPath;
             public string ReplicaPath;
+            public LinkFolder Link;
+            public string LinkRelative;
+            public string LocalRoot;
+            public string CloudRoot;
         }
 
         public static Place FindPlace(string path, List<Provider> providers)
         {
             if (string.IsNullOrEmpty(path) || providers == null) return null;
+            Place linked = FindLinkedPlace(path, providers, ReadLinks());
+            if (linked != null) return linked;
             foreach (Provider provider in providers)
             {
                 if (provider == null || string.IsNullOrEmpty(provider.Root)) continue;
@@ -208,6 +215,34 @@ namespace DriveFolderSync
             return null;
         }
 
+        public static Place FindLinkedPlace(string path, List<Provider> providers, List<LinkFolder> links)
+        {
+            Place best = null;
+            int depth = -1;
+            foreach (LinkFolder link in links)
+            {
+                Provider provider = FindProvider(providers, link.ProviderId);
+                string cloud = ResolveRemote(link, providers);
+                if (provider == null || string.IsNullOrEmpty(cloud)) continue;
+                bool local = IsUnder(path, link.Local);
+                string anchor = local ? link.Local : cloud;
+                if (!IsUnder(path, anchor) || Norm(anchor).Length <= depth) continue;
+                string rel = Relative(path, anchor) ?? "";
+                best = new Place();
+                best.Provider = provider;
+                best.Link = link;
+                best.LinkRelative = rel;
+                best.LocalRoot = link.Local;
+                best.CloudRoot = cloud;
+                best.ViewingReplica = local;
+                best.CloudPath = Path.Combine(cloud, rel);
+                best.ReplicaPath = Path.Combine(link.Local, rel);
+                best.Relative = Relative(best.CloudPath, provider.Root) ?? "";
+                depth = Norm(anchor).Length;
+            }
+            return best;
+        }
+
         static Place MakePlace(Provider provider, string relative, bool viewingReplica)
         {
             Place place = new Place();
@@ -216,6 +251,9 @@ namespace DriveFolderSync
             place.ViewingReplica = viewingReplica;
             place.CloudPath = string.IsNullOrEmpty(place.Relative) ? provider.Root : Path.Combine(provider.Root, place.Relative);
             place.ReplicaPath = ReplicaPath(provider, place.Relative);
+            place.LinkRelative = place.Relative;
+            place.LocalRoot = ReplicaRoot(provider);
+            place.CloudRoot = provider.Root;
             return place;
         }
 
@@ -320,7 +358,7 @@ namespace DriveFolderSync
                 if (string.IsNullOrEmpty(provider.Id) || string.IsNullOrEmpty(provider.Root)) continue;
                 if (string.IsNullOrEmpty(provider.Kind)) provider.Kind = "Folder";
                 if (string.IsNullOrEmpty(provider.Name)) provider.Name = new DirectoryInfo(provider.Root).Name;
-                if (!ContainsRoot(list, provider.Root)) list.Add(provider);
+                if (!ContainsRoot(list, provider.Root) && FindProvider(list, provider.Id) == null) list.Add(provider);
             }
             return list;
         }
@@ -484,7 +522,8 @@ namespace DriveFolderSync
             Provider provider = FindProvider(providers, folder.ProviderId);
             if (provider == null || string.IsNullOrEmpty(provider.Root)) return null;
             if (string.IsNullOrEmpty(folder.RemoteRelative)) return provider.Root;
-            return Path.Combine(provider.Root, folder.RemoteRelative);
+            string remote = Path.GetFullPath(Path.Combine(provider.Root, folder.RemoteRelative));
+            return IsUnder(remote, provider.Root) ? remote : null;
         }
 
         public static List<LinkFolder> ReadLinks()
@@ -558,6 +597,7 @@ namespace DriveFolderSync
                 snap.Rm = NullIfEmpty(GetString(item, "rm"));
                 snap.Pending = GetBool(item, "pending");
                 snap.Hold = GetBool(item, "hold");
+                snap.Synced = GetString(item, "synced");
                 map[rel] = snap;
             }
             return map;
@@ -580,6 +620,7 @@ namespace DriveFolderSync
                 item["rm"] = snap.Rm;
                 item["pending"] = snap.Pending;
                 item["hold"] = snap.Hold;
+                item["synced"] = snap.Synced ?? "";
                 files.Add(item);
             }
             Dictionary<string, object> root = new Dictionary<string, object>();
@@ -634,7 +675,12 @@ namespace DriveFolderSync
         public static string Norm(string path)
         {
             if (string.IsNullOrEmpty(path)) return "";
-            try { return Path.GetFullPath(path).TrimEnd('\\'); }
+            try
+            {
+                string full = Path.GetFullPath(path);
+                string root = Path.GetPathRoot(full);
+                return string.Equals(full, root, StringComparison.OrdinalIgnoreCase) ? full : full.TrimEnd('\\');
+            }
             catch { return path.TrimEnd('\\'); }
         }
 
@@ -644,7 +690,7 @@ namespace DriveFolderSync
             string left = Norm(path);
             string right = Norm(root);
             if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase)) return true;
-            return left.StartsWith(right + "\\", StringComparison.OrdinalIgnoreCase);
+            return left.StartsWith(right.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
         }
 
         public static string Relative(string path, string root)
@@ -652,8 +698,9 @@ namespace DriveFolderSync
             string left = Norm(path);
             string right = Norm(root);
             if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase)) return "";
-            if (!left.StartsWith(right + "\\", StringComparison.OrdinalIgnoreCase)) return null;
-            return left.Substring(right.Length + 1);
+            string prefix = right.TrimEnd('\\') + "\\";
+            if (!left.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+            return left.Substring(prefix.Length);
         }
 
         static string NullIfEmpty(string value)

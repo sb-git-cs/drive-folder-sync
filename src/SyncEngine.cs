@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Runtime.InteropServices;
 
 namespace DriveFolderSync
 {
@@ -31,6 +32,40 @@ namespace DriveFolderSync
                 try { mutex.ReleaseMutex(); }
                 catch { }
             }
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct FindData
+        {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME Creation;
+            public System.Runtime.InteropServices.ComTypes.FILETIME Access;
+            public System.Runtime.InteropServices.ComTypes.FILETIME Write;
+            public uint SizeHigh;
+            public uint SizeLow;
+            public uint Tag;
+            public uint Reserved;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Name;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string Alternate;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern IntPtr FindFirstFile(string path, out FindData data);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool FindClose(IntPtr handle);
+
+        public static bool IsRedirect(string path, FileAttributes attributes)
+        {
+            if ((attributes & FileAttributes.ReparsePoint) == 0) return false;
+            FindData data;
+            IntPtr handle = FindFirstFile(LongPath(path), out data);
+            if (handle == new IntPtr(-1)) throw new IOException("Could not inspect reparse point: " + path);
+            try
+            {
+                // Windows' name-surrogate bit distinguishes junctions/symlinks from cloud placeholders.
+                return (data.Tag & 0x20000000) != 0;
+            }
+            finally { FindClose(handle); }
         }
 
         public static bool SkipName(string name, bool isDir)
@@ -71,7 +106,7 @@ namespace DriveFolderSync
         {
             List<FileRecord> list = new List<FileRecord>();
             if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) return list;
-            string rootFull = Path.GetFullPath(root).TrimEnd('\\');
+            string rootFull = Store.Norm(root);
             Stack<string> stack = new Stack<string>();
             stack.Push(rootFull);
             while (stack.Count > 0)
@@ -79,12 +114,12 @@ namespace DriveFolderSync
                 string dir = stack.Pop();
                 FileSystemInfo[] children;
                 try { children = new DirectoryInfo(LongPath(dir)).GetFileSystemInfos(); }
-                catch { continue; }
+                catch (Exception ex) { throw new IOException("Could not scan " + dir + ". Sync stopped to protect files.", ex); }
                 foreach (FileSystemInfo child in children)
                 {
                     bool isDir = (child.Attributes & FileAttributes.Directory) != 0;
-                    if ((child.Attributes & FileAttributes.ReparsePoint) != 0) continue;
                     if (SkipName(child.Name, isDir)) continue;
+                    if (IsRedirect(child.FullName, child.Attributes)) throw new IOException("Sync cannot follow symbolic links or junctions: " + child.FullName);
                     if (isDir)
                     {
                         stack.Push(child.FullName);
@@ -93,12 +128,13 @@ namespace DriveFolderSync
                     FileInfo info = child as FileInfo;
                     if (info == null) continue;
                     string rel = info.FullName;
-                    if (rel.StartsWith(@"\\?\", StringComparison.Ordinal)) rel = rel.Substring(4);
+                    if (rel.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) rel = @"\\" + rel.Substring(8);
+                    else if (rel.StartsWith(@"\\?\", StringComparison.Ordinal)) rel = rel.Substring(4);
                     if (rel.Length < rootFull.Length) continue;
                     rel = rel.Substring(rootFull.Length).TrimStart('\\');
                     FileRecord record = new FileRecord();
                     record.Rel = rel;
-                    record.Full = info.FullName.StartsWith(@"\\?\", StringComparison.Ordinal) ? info.FullName.Substring(4) : info.FullName;
+                    record.Full = info.FullName;
                     record.Length = info.Length;
                     record.MtimeUtc = info.LastWriteTimeUtc;
                     list.Add(record);
@@ -128,7 +164,7 @@ namespace DriveFolderSync
             DateTime other;
             if (!DateTime.TryParse(snapMtime, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out other)) return false;
             double diff = Math.Abs((mtime.ToUniversalTime() - other.ToUniversalTime()).TotalSeconds);
-            return diff <= 3;
+            return diff == 0;
         }
 
         public static Snap NewEntry(FileRecord local, FileRecord remote, bool pending, bool hold)
@@ -149,6 +185,39 @@ namespace DriveFolderSync
             return snap;
         }
 
+        public static bool SameContents(FileRecord left, FileRecord right)
+        {
+            if (left == null || right == null || left.Length != right.Length) return false;
+            if (string.IsNullOrEmpty(left.Full) || string.IsNullOrEmpty(right.Full)) return false;
+            using (FileStream a = new FileStream(LongPath(left.Full), FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (FileStream b = new FileStream(LongPath(right.Full), FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (a.Length != b.Length) return false;
+                byte[] x = new byte[65536];
+                byte[] y = new byte[65536];
+                int count;
+                while ((count = a.Read(x, 0, x.Length)) > 0)
+                {
+                    int read = 0;
+                    while (read < count)
+                    {
+                        int got = b.Read(y, read, count - read);
+                        if (got == 0) return false;
+                        read += got;
+                    }
+                    for (int i = 0; i < count; i++) if (x[i] != y[i]) return false;
+                }
+                return b.ReadByte() == -1;
+            }
+        }
+
+        static Snap SyncedEntry(FileRecord local, FileRecord remote)
+        {
+            Snap snap = NewEntry(local, remote, false, false);
+            snap.Synced = Stamp(DateTime.UtcNow);
+            return snap;
+        }
+
         public static void Initialize(string local, string remote, string statePath)
         {
             Dictionary<string, FileRecord> localFiles = Index(ListFiles(local));
@@ -162,7 +231,7 @@ namespace DriveFolderSync
                 FileRecord left = localFiles.ContainsKey(rel) ? localFiles[rel] : null;
                 FileRecord right = remoteFiles.ContainsKey(rel) ? remoteFiles[rel] : null;
                 if (left == null || right == null) continue;
-                bool hold = left.Length != right.Length;
+                bool hold = !SameContents(left, right);
                 map[rel] = NewEntry(left, right, false, hold);
             }
             Store.SaveState(statePath, map);
@@ -223,11 +292,11 @@ namespace DriveFolderSync
                 }
                 DirectoryInfo[] dirs;
                 try { dirs = new DirectoryInfo(cloudDir).GetDirectories(); }
-                catch { continue; }
+                catch (Exception ex) { throw new IOException("Could not scan folders in " + cloudDir, ex); }
                 foreach (DirectoryInfo dir in dirs)
                 {
-                    if ((dir.Attributes & FileAttributes.ReparsePoint) != 0) continue;
                     if (SkipName(dir.Name, true)) continue;
+                    if (IsRedirect(dir.FullName, dir.Attributes)) throw new IOException("Sync cannot follow symbolic links or junctions: " + dir.FullName);
                     string child = string.IsNullOrEmpty(rel) ? dir.Name : rel + "\\" + dir.Name;
                     stack.Push(child);
                 }
@@ -242,7 +311,10 @@ namespace DriveFolderSync
             if (dirs == null) dirs = new List<string>();
             if (files == null) files = new List<string>();
             Directory.CreateDirectory(destRoot);
-            string dest = Path.Combine(destRoot, relative);
+            string dest = Path.GetFullPath(Path.Combine(destRoot, relative));
+            if (!Store.IsUnder(dest, destRoot)) throw new IOException("The copy must stay inside the selected folder.");
+            RejectReparsePath(source);
+            RejectReparsePath(dest);
             if (File.Exists(source))
             {
                 if (string.Equals(Store.Norm(source), Store.Norm(dest), StringComparison.OrdinalIgnoreCase)) return;
@@ -268,12 +340,12 @@ namespace DriveFolderSync
                 }
                 FileSystemInfo[] children;
                 try { children = new DirectoryInfo(LongPath(from)).GetFileSystemInfos(); }
-                catch { continue; }
+                catch (Exception ex) { throw new IOException("Could not copy folder " + from, ex); }
                 foreach (FileSystemInfo child in children)
                 {
                     bool isDir = (child.Attributes & FileAttributes.Directory) != 0;
-                    if ((child.Attributes & FileAttributes.ReparsePoint) != 0) continue;
                     if (SkipName(child.Name, isDir)) continue;
+                    if (IsRedirect(child.FullName, child.Attributes)) throw new IOException("Copy cannot follow symbolic links or junctions: " + child.FullName);
                     string childSub = string.IsNullOrEmpty(sub) ? child.Name : sub + "\\" + child.Name;
                     if (isDir) pending.Push(childSub);
                     else
@@ -331,6 +403,8 @@ namespace DriveFolderSync
                 return stats;
             }
             if (!Directory.Exists(local)) Directory.CreateDirectory(local);
+            RejectReparsePath(local);
+            RejectReparsePath(remote);
             if (onlyFiles == null)
             {
                 if (!Directory.Exists(remote)) Directory.CreateDirectory(remote);
@@ -356,6 +430,8 @@ namespace DriveFolderSync
             }
             Dictionary<string, Snap> state = Store.ReadState(statePath);
             if (onlyFiles != null) DropKeys(state, AllowSet(onlyFiles));
+            else if (direction == "Push") MirrorDirectories(local, remote);
+            else MirrorDirectories(remote, local);
 
             if (direction == "Push")
             {
@@ -365,19 +441,40 @@ namespace DriveFolderSync
                     FileRecord localFile = localFiles[rel];
                     FileRecord remoteFile = remoteFiles.ContainsKey(rel) ? remoteFiles[rel] : null;
                     Snap snap = state.ContainsKey(rel) ? state[rel] : null;
+                    if (snap != null && snap.Hold && remoteFile != null && SameContents(localFile, remoteFile))
+                    {
+                        state[rel] = SyncedEntry(localFile, remoteFile);
+                        continue;
+                    }
                     bool localSame = snap != null && SameSig(localFile.Length, localFile.MtimeUtc, snap.Ll, snap.Lm);
                     bool pending = snap != null && snap.Pending;
-                    if (pending && remoteFile != null && remoteFile.Length == localFile.Length && !cloudReadbackIsTruth)
+                    if (pending && remoteFile != null && SameContents(localFile, remoteFile))
+                    {
+                        state[rel] = SyncedEntry(localFile, remoteFile);
                         continue;
-                    if (localSame && !pending) continue;
+                    }
+                    if (snap == null && remoteFile != null)
+                    {
+                        bool same = SameContents(localFile, remoteFile);
+                        state[rel] = same ? SyncedEntry(localFile, remoteFile) : NewEntry(localFile, remoteFile, false, true);
+                        if (!same) stats.Conflict++;
+                        continue;
+                    }
+                    if (localSame && !pending)
+                    {
+                        if (snap.Hold) stats.Conflict++;
+                        else if (remoteFile != null && string.IsNullOrEmpty(snap.Synced) && SameContents(localFile, remoteFile))
+                            state[rel] = SyncedEntry(localFile, remoteFile);
+                        continue;
+                    }
                     bool remoteMoved = snap != null && remoteFile != null && !SameSig(remoteFile.Length, remoteFile.MtimeUtc, snap.Rl, snap.Rm);
-                    if (remoteMoved && remoteFile.MtimeUtc > localFile.MtimeUtc.AddSeconds(3) && !pending)
+                    if (remoteMoved && !pending)
                     {
                         string conflictRel = ConflictRel(rel, "local");
                         try
                         {
                             CopyFile(localFile.Full, Path.Combine(remote, conflictRel));
-                            state[rel] = NewEntry(localFile, remoteFile, false, false);
+                            state[rel] = NewEntry(localFile, remoteFile, false, true);
                             stats.Conflict++;
                             Store.Log("conflict kept newer cloud file, saved local copy: " + conflictRel);
                         }
@@ -395,11 +492,12 @@ namespace DriveFolderSync
                         FileRecord remoteNow = FromDisk(dest);
                         if (cloudReadbackIsTruth)
                         {
-                            state[rel] = NewEntry(localFile, remoteNow, false, false);
+                            state[rel] = SyncedEntry(localFile, remoteNow);
                         }
                         else
                         {
                             Snap entry = NewEntry(localFile, null, true, false);
+                            entry.Synced = Stamp(DateTime.UtcNow);
                             if (snap != null)
                             {
                                 entry.Rl = snap.Rl;
@@ -416,33 +514,8 @@ namespace DriveFolderSync
                         Store.Log("upload failed " + rel + ": " + ex.Message);
                     }
                 }
-                List<string> stateKeys = new List<string>(state.Keys);
-                foreach (string rel in stateKeys)
-                {
-                    if (localFiles.ContainsKey(rel)) continue;
-                    Snap snap = state[rel];
-                    if (snap.Pending) continue;
-                    FileRecord remoteFile = remoteFiles.ContainsKey(rel) ? remoteFiles[rel] : null;
-                    if (remoteFile == null)
-                    {
-                        state.Remove(rel);
-                        continue;
-                    }
-                    bool remoteSame = SameSig(remoteFile.Length, remoteFile.MtimeUtc, snap.Rl, snap.Rm);
-                    if (!remoteSame && snap.Rl != null) continue;
-                    try
-                    {
-                        DeleteFile(Path.Combine(remote, rel));
-                        state.Remove(rel);
-                        stats.Del++;
-                        Store.Log("deleted on cloud " + rel);
-                    }
-                    catch (Exception ex)
-                    {
-                        stats.Errors++;
-                        Store.Log("delete on cloud failed " + rel + ": " + ex.Message);
-                    }
-                }
+                // Backup retains cloud copies when a local file is deleted.
+
             }
             else
             {
@@ -452,12 +525,17 @@ namespace DriveFolderSync
                     FileRecord remoteFile = remoteFiles[rel];
                     FileRecord localFile = localFiles.ContainsKey(rel) ? localFiles[rel] : null;
                     Snap snap = state.ContainsKey(rel) ? state[rel] : null;
+                    if (snap != null && snap.Hold && localFile != null && SameContents(localFile, remoteFile))
+                    {
+                        state[rel] = SyncedEntry(localFile, remoteFile);
+                        continue;
+                    }
                     if (snap != null && snap.Pending && localFile != null)
                     {
                         bool driveUnchanged = !string.IsNullOrEmpty(snap.Rl) && SameSig(remoteFile.Length, remoteFile.MtimeUtc, snap.Rl, snap.Rm);
-                        if (remoteFile.Length == localFile.Length && remoteFile.MtimeUtc >= localFile.MtimeUtc.AddSeconds(-3))
+                        if (SameContents(localFile, remoteFile))
                         {
-                            state[rel] = NewEntry(localFile, remoteFile, false, false);
+                            state[rel] = SyncedEntry(localFile, remoteFile);
                             Store.Log("upload confirmed " + rel);
                         }
                         else if (driveUnchanged || localFile.MtimeUtc > remoteFile.MtimeUtc.AddSeconds(3))
@@ -482,17 +560,24 @@ namespace DriveFolderSync
                         }
                         continue;
                     }
+                    if (snap == null && localFile != null)
+                    {
+                        bool same = SameContents(localFile, remoteFile);
+                        state[rel] = same ? SyncedEntry(localFile, remoteFile) : NewEntry(localFile, remoteFile, false, true);
+                        if (!same) stats.Conflict++;
+                        continue;
+                    }
                     bool remoteSame = snap != null && SameSig(remoteFile.Length, remoteFile.MtimeUtc, snap.Rl, snap.Rm);
                     bool localSame = localFile != null && snap != null && SameSig(localFile.Length, localFile.MtimeUtc, snap.Ll, snap.Lm);
-                    if (snap != null && snap.Hold && remoteSame && (localFile == null || localSame)) continue;
-                    if (remoteSame && !(snap != null && snap.Hold && !localSame)) continue;
+                    if (snap != null && snap.Hold && remoteSame && localFile != null && localSame) { stats.Conflict++; continue; }
+                    if (remoteSame && localFile != null && !(snap != null && snap.Hold && !localSame)) continue;
                     if (localFile != null && !localSame && snap != null)
                     {
                         try
                         {
                             string conflictRel = ConflictRel(rel, "drive");
                             CopyFile(remoteFile.Full, Path.Combine(local, conflictRel));
-                            state[rel] = NewEntry(localFile, remoteFile, false, false);
+                            state[rel] = NewEntry(localFile, remoteFile, false, true);
                             stats.Conflict++;
                             Store.Log("kept local edits, saved cloud copy " + conflictRel);
                         }
@@ -528,7 +613,7 @@ namespace DriveFolderSync
                         }
                         CopyFile(remoteFile.Full, dest);
                         FileRecord localNow = FromDisk(dest);
-                        state[rel] = NewEntry(localNow, remoteFile, false, false);
+                        state[rel] = SyncedEntry(localNow, remoteFile);
                         stats.Down++;
                         Store.Log("downloaded " + rel);
                     }
@@ -549,7 +634,7 @@ namespace DriveFolderSync
                         state.Remove(rel);
                         continue;
                     }
-                    if (snap.Pending) continue;
+                    if (snap.Pending || snap.Hold || string.IsNullOrEmpty(snap.Rl)) continue;
                     bool localSame = SameSig(localFile.Length, localFile.MtimeUtc, snap.Ll, snap.Lm);
                     if (!localSame)
                     {
@@ -561,6 +646,7 @@ namespace DriveFolderSync
                     }
                     try
                     {
+                        RejectReparsePath(Path.GetDirectoryName(Path.Combine(remote, rel)));
                         DeleteFile(localFile.Full);
                         state.Remove(rel);
                         stats.Del++;
@@ -585,6 +671,7 @@ namespace DriveFolderSync
             if (string.IsNullOrEmpty(remote) || !Directory.Exists(Path.GetPathRoot(remote) ?? ""))
             {
                 Store.Log(direction + " skipped, cloud folder is not available: " + folder.Local);
+                folder.LastErrors = 1;
                 SyncStats missing = new SyncStats();
                 missing.Errors = 1;
                 return missing;
@@ -593,6 +680,7 @@ namespace DriveFolderSync
             if (provider == null || !provider.IsOnline)
             {
                 Store.Log(direction + " skipped, drive is not connected: " + folder.ProviderId);
+                folder.LastErrors = 1;
                 SyncStats offline = new SyncStats();
                 offline.Errors = 1;
                 return offline;
@@ -607,7 +695,7 @@ namespace DriveFolderSync
             }
             List<string> onlyFiles = folder.Partial ? (folder.Files ?? new List<string>()) : null;
             SyncStats stats = SyncFolder(direction, folder.Local, remote, Store.StatePath(folder.Id), cloudReadbackIsTruth, onlyFiles);
-            folder.LastSync = Stamp(DateTime.UtcNow);
+            if (stats.Errors == 0 && stats.Conflict == 0) folder.LastSync = Stamp(DateTime.UtcNow);
             folder.LastErrors = stats.Errors;
             Store.Log(direction + " " + folder.Local + ": uploaded=" + stats.Up + " downloaded=" + stats.Down
                 + " deleted=" + stats.Del + " conflicts=" + stats.Conflict + " errors=" + stats.Errors);
@@ -634,6 +722,7 @@ namespace DriveFolderSync
                     catch (Exception ex)
                     {
                         total.Errors++;
+                        folder.LastErrors = 1;
                         Store.Log(direction + " failed for " + folder.Local + ": " + ex.Message);
                     }
                 }
@@ -661,8 +750,16 @@ namespace DriveFolderSync
             {
                 if (string.IsNullOrEmpty(rel)) continue;
                 if (SkipName(Path.GetFileName(rel), false)) continue;
-                string path = Path.Combine(root, rel);
-                if (!File.Exists(LongPath(path))) continue;
+                string path = Path.GetFullPath(Path.Combine(root, rel));
+                if (!Store.IsUnder(path, root)) throw new IOException("A selected file escapes its folder root.");
+                try
+                {
+                    FileAttributes attributes = File.GetAttributes(LongPath(path));
+                    if (IsRedirect(path, attributes)) throw new IOException("Cannot safely scan a symbolic link: " + path);
+                    if ((attributes & FileAttributes.Directory) != 0) continue;
+                }
+                catch (FileNotFoundException) { continue; }
+                catch (DirectoryNotFoundException) { continue; }
                 FileRecord record = FromDisk(path);
                 record.Rel = rel;
                 map[rel] = record;
@@ -733,7 +830,7 @@ namespace DriveFolderSync
                         FileRecord left = File.Exists(localFile) ? FromDisk(localFile) : null;
                         FileRecord right = !string.IsNullOrEmpty(remoteFile) && File.Exists(remoteFile) ? FromDisk(remoteFile) : null;
                         if (left == null && right == null) continue;
-                        state[rel] = NewEntry(left, right, false, left != null && right != null && left.Length != right.Length);
+                        state[rel] = NewEntry(left, right, false, left != null && right != null && !SameContents(left, right));
                     }
                 }
                 Store.SaveState(Store.StatePath(folder.Id), state);
@@ -758,34 +855,66 @@ namespace DriveFolderSync
             }
         }
 
+        public static string ValidateLink(string local, string providerId, string remoteRelative, List<LinkFolder> links)
+        {
+            if (string.IsNullOrWhiteSpace(local) || !Path.IsPathRooted(local)
+                || (Path.GetPathRoot(local).Length < 3 && !local.StartsWith(@"\\", StringComparison.Ordinal)))
+                throw new ArgumentException("Choose an absolute local folder path.");
+            local = Path.GetFullPath(local);
+            Provider provider = Store.FindProvider(Store.DetectProviders(), providerId);
+            if (provider == null || !provider.IsOnline) throw new IOException("The selected drive is not connected.");
+            if (Path.IsPathRooted(remoteRelative ?? "")) throw new ArgumentException("Choose a cloud folder inside the selected drive.");
+            string remote = Path.GetFullPath(Path.Combine(provider.Root, remoteRelative ?? ""));
+            if (!Store.IsUnder(remote, provider.Root)) throw new ArgumentException("The cloud folder must stay inside the selected drive.");
+            RejectReparsePath(local);
+            RejectReparsePath(remote);
+            if (Store.IsUnder(local, remote) || Store.IsUnder(remote, local))
+                throw new ArgumentException("Local and cloud folders must be separate and cannot contain each other.");
+            foreach (Provider drive in Store.DetectProviders())
+                if (Store.IsUnder(local, drive.Root)) throw new ArgumentException("Choose a local folder outside your cloud drives.");
+            foreach (LinkFolder existing in links)
+            {
+                string other = Store.ResolveRemote(existing, Store.DetectProviders());
+                if (Store.IsUnder(local, existing.Local) || Store.IsUnder(existing.Local, local)
+                    || (!string.IsNullOrEmpty(other) && (Store.IsUnder(remote, other) || Store.IsUnder(other, remote)))
+                    || (!string.IsNullOrEmpty(other) && (Store.IsUnder(local, other) || Store.IsUnder(other, local)))
+                    || Store.IsUnder(remote, existing.Local) || Store.IsUnder(existing.Local, remote))
+                    throw new ArgumentException("This folder overlaps an existing attachment: " + existing.Local + ". Unlink it first or choose separate folders.");
+            }
+            return remote;
+        }
+
+        static void RejectReparsePath(string path)
+        {
+            string current = Path.GetFullPath(path);
+            while (!string.IsNullOrEmpty(current))
+            {
+                if ((Directory.Exists(current) || File.Exists(current)) && IsRedirect(current, File.GetAttributes(current)))
+                    throw new ArgumentException("Choose a folder without symbolic links or junctions: " + current);
+                current = Path.GetDirectoryName(current);
+            }
+        }
+
         public static LinkFolder Link(string local, string providerId, string remoteRelative)
         {
-            local = Store.Norm(local);
             using (LockState(120))
             {
                 List<LinkFolder> links = Store.ReadLinks();
-                foreach (LinkFolder existing in links)
-                {
-                    if (string.Equals(Store.Norm(existing.Local), local, StringComparison.OrdinalIgnoreCase)) return existing;
-                    if (string.Equals(existing.ProviderId, providerId, StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(existing.RemoteRelative ?? "", remoteRelative ?? "", StringComparison.OrdinalIgnoreCase))
-                        return existing;
-                }
+                string remote = ValidateLink(local, providerId, remoteRelative, links);
+                local = Store.Norm(local);
                 LinkFolder folder = new LinkFolder();
                 folder.Id = Guid.NewGuid().ToString("n");
                 folder.Local = local;
                 folder.ProviderId = providerId;
-                folder.RemoteRelative = remoteRelative ?? "";
+                folder.RemoteRelative = Store.Relative(remote, Store.FindProvider(Store.DetectProviders(), providerId).Root) ?? "";
                 folder.Added = Stamp(DateTime.UtcNow);
+                Store.SaveCustomProvider(Store.FindProvider(Store.DetectProviders(), providerId));
                 if (!Directory.Exists(local)) Directory.CreateDirectory(local);
+                if (Directory.Exists(remote)) Initialize(local, remote, Store.StatePath(folder.Id));
+                else Store.SaveState(Store.StatePath(folder.Id), new Dictionary<string, Snap>(StringComparer.OrdinalIgnoreCase));
                 links.Add(folder);
                 Store.SaveLinks(links);
-                string remote = Store.ResolveRemote(folder, Store.DetectProviders());
-                if (!string.IsNullOrEmpty(remote) && Directory.Exists(remote))
-                    Initialize(local, remote, Store.StatePath(folder.Id));
-                else
-                    Store.SaveState(Store.StatePath(folder.Id), new Dictionary<string, Snap>(StringComparer.OrdinalIgnoreCase));
-                Store.Log("linked " + local + " <-> " + remoteRelative);
+                Store.Log("linked " + local + " <-> " + remote);
                 return folder;
             }
         }
@@ -843,22 +972,27 @@ namespace DriveFolderSync
             row.Text = "Not linked";
             row.LastSynced = "";
             if (snap == null && local == null && remote == null) return row;
-            if (snap != null && !string.IsNullOrEmpty(snap.Lm)) row.LastSynced = snap.Lm;
-            else if (snap != null && !string.IsNullOrEmpty(snap.Rm)) row.LastSynced = snap.Rm;
+            if (snap != null) row.LastSynced = snap.Synced ?? "";
+            if (local == null && remote != null) { row.Kind = "cloud"; row.Text = "Only in cloud"; row.LastSynced = ""; return row; }
 
             if (snap == null)
             {
                 if (local != null && remote == null) { row.Kind = "local"; row.Text = "New on this PC"; return row; }
                 if (local == null && remote != null) { row.Kind = "cloud"; row.Text = "New in the cloud"; return row; }
-                if (local != null && remote != null && local.Length == remote.Length)
+                if (local != null && remote != null && SameContents(local, remote))
                 {
                     row.Kind = "same";
-                    row.Text = "In sync";
-                    row.LastSynced = Stamp(local.MtimeUtc);
+                    row.Text = "Contents match";
                     return row;
                 }
                 row.Kind = "cloud";
                 row.Text = "Changed on both sides";
+                return row;
+            }
+            if (snap.Pending && local != null && remote != null && SameContents(local, remote))
+            {
+                row.Kind = "same";
+                row.Text = "In sync";
                 return row;
             }
             if (snap.Pending)
@@ -882,7 +1016,7 @@ namespace DriveFolderSync
             if (remoteMissing) { row.Kind = "local"; row.Text = "Missing in the cloud"; return row; }
             if (local != null && remote == null) { row.Kind = "local"; row.Text = localSame ? "In sync" : "Changed on this PC"; if (localSame) row.Kind = "same"; return row; }
             if (local == null && remote != null) { row.Kind = "cloud"; row.Text = remoteSame ? "In sync" : "Changed in the cloud"; if (remoteSame) row.Kind = "same"; return row; }
-            if (localSame && remoteSame) { row.Kind = "same"; row.Text = "In sync"; return row; }
+            if (localSame && remoteSame) { row.Kind = "same"; row.Text = string.IsNullOrEmpty(row.LastSynced) ? "Contents match" : "In sync"; return row; }
             if (!localSame && remoteSame) { row.Kind = "local"; row.Text = "Changed on this PC"; return row; }
             if (localSame && !remoteSame) { row.Kind = "cloud"; row.Text = "Changed in the cloud"; return row; }
             row.Kind = "cloud";

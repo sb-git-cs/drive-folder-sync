@@ -58,7 +58,15 @@ namespace DriveFolderSync
 
                 File.Delete(only);
                 push = SyncEngine.SyncFolder("Push", local, remote, state, true);
-                if (File.Exists(Path.Combine(remote, "only-local.txt"))) throw new Exception("local delete was not applied on the cloud side");
+                if (!File.Exists(Path.Combine(remote, "only-local.txt")) || push.Del != 0) throw new Exception("local deletion removed the cloud backup");
+                FileRecord retained = new FileRecord();
+                retained.Full = Path.Combine(remote, "only-local.txt");
+                retained.Length = new FileInfo(retained.Full).Length;
+                retained.MtimeUtc = File.GetLastWriteTimeUtc(retained.Full);
+                SyncEngine.RowStatus retainedStatus = SyncEngine.Classify(null, retained, Store.ReadState(state)["only-local.txt"]);
+                if (retainedStatus.Text != "Only in cloud" || retainedStatus.Kind != "cloud") throw new Exception("retained cloud file was not highlighted");
+                pull = SyncEngine.SyncFolder("Pull", local, remote, state, true);
+                if (File.ReadAllText(only) != "local-edited") throw new Exception("startup refresh did not restore the retained cloud file");
 
                 File.Delete(cloud);
                 pull = SyncEngine.SyncFolder("Pull", local, remote, state, true);
@@ -196,6 +204,163 @@ namespace DriveFolderSync
                 SyncEngine.CopyInto(Path.Combine(dropCloud, "b"), dropLocal, "b", dropDirs, dropFiles);
                 if (File.ReadAllText(Path.Combine(dropLocal, "b", "skip.txt")) != "skip") throw new Exception("dropped folder did not keep its files");
                 if (dropFiles.Count < 2) throw new Exception("dropped folder did not record its files");
+
+                string providerRoot = Path.Combine(root, "provider");
+                Directory.CreateDirectory(providerRoot);
+                Provider attachedProvider = new Provider();
+                attachedProvider.Id = "test:provider";
+                attachedProvider.Name = "Test Cloud";
+                attachedProvider.Kind = "Folder";
+                attachedProvider.Root = providerRoot;
+                Store.SaveCustomProvider(attachedProvider);
+                string arbitraryLocal = Path.Combine(root, "another-drive", "project-documents");
+                Directory.CreateDirectory(Path.Combine(arbitraryLocal, "notes"));
+                File.WriteAllText(Path.Combine(arbitraryLocal, "notes", "project.txt"), "project");
+                Directory.CreateDirectory(Path.Combine(arbitraryLocal, "empty"));
+                LinkFolder attachment = SyncEngine.Link(arbitraryLocal, attachedProvider.Id, @"backups\project-documents");
+                string attachmentRemote = Store.ResolveRemote(attachment, Store.DetectProviders());
+                if (Directory.Exists(attachmentRemote)) throw new Exception("linking copied or created a cloud destination before backup");
+                SyncStats initialBackup = SyncEngine.SyncLink(attachment, "Push", true);
+                if (initialBackup.Errors != 0 || File.ReadAllText(Path.Combine(attachmentRemote, "notes", "project.txt")) != "project")
+                    throw new Exception("arbitrary local folder did not back up to the new destination");
+                if (!Directory.Exists(Path.Combine(attachmentRemote, "empty"))) throw new Exception("empty local folder did not back up");
+                if (Store.Norm(@"D:\") != @"D:\" || !Store.IsUnder(@"D:\project-documents", @"D:\")
+                    || Store.Relative(@"D:\project-documents", @"D:\") != "project-documents")
+                    throw new Exception("drive root paths were resolved incorrectly");
+                Store.Place localPlace = Store.FindPlace(Path.Combine(arbitraryLocal, "notes"), Store.DetectProviders());
+                Store.Place cloudPlace = Store.FindPlace(Path.Combine(attachmentRemote, "notes"), Store.DetectProviders());
+                if (localPlace.Link.Id != attachment.Id || cloudPlace.ReplicaPath != localPlace.ReplicaPath
+                    || localPlace.LinkRelative != "notes") throw new Exception("folder pair navigation used the default replica path");
+                string anotherLocal = Path.Combine(root, "independent");
+                Directory.CreateDirectory(anotherLocal);
+                SyncEngine.Link(anotherLocal, attachedProvider.Id, "independent");
+                bool rejected = false;
+                try { SyncEngine.Link(arbitraryLocal, attachedProvider.Id, "different"); } catch (ArgumentException) { rejected = true; }
+                if (!rejected) throw new Exception("duplicate local root was accepted");
+                rejected = false;
+                try { SyncEngine.Link(Path.Combine(root, "other"), attachedProvider.Id, @"backups\project-documents\nested"); } catch (ArgumentException) { rejected = true; }
+                if (!rejected) throw new Exception("overlapping cloud destination was accepted");
+                rejected = false;
+                try { SyncEngine.Link(Path.Combine(root, "escape-local"), attachedProvider.Id, @"..\outside-provider"); } catch (ArgumentException) { rejected = true; }
+                if (!rejected) throw new Exception("cloud path traversal was accepted");
+                rejected = false;
+                try { SyncEngine.Link(Path.Combine(providerRoot, "inside"), attachedProvider.Id, "elsewhere"); } catch (ArgumentException) { rejected = true; }
+                if (!rejected) throw new Exception("a cloud folder was accepted as the local root");
+                rejected = false;
+                try { SyncEngine.Link("relative-folder", attachedProvider.Id, "relative-destination"); } catch (ArgumentException) { rejected = true; }
+                if (!rejected) throw new Exception("a relative local path was accepted");
+
+                string existingLocal = Path.Combine(root, "existing-local");
+                string existingCloud = Path.Combine(providerRoot, "existing-cloud");
+                Directory.CreateDirectory(existingLocal);
+                Directory.CreateDirectory(existingCloud);
+                string initialL = Path.Combine(existingLocal, "same-size.txt");
+                string initialR = Path.Combine(existingCloud, "same-size.txt");
+                File.WriteAllText(initialL, "aaaa");
+                File.WriteAllText(initialR, "bbbb");
+                File.SetLastWriteTimeUtc(initialL, stamp);
+                File.SetLastWriteTimeUtc(initialR, stamp);
+                LinkFolder existingAttachment = SyncEngine.Link(existingLocal, attachedProvider.Id, "existing-cloud");
+                SyncEngine.SyncLink(existingAttachment, "Pull", true);
+                SyncStats initialConflict = SyncEngine.SyncLink(existingAttachment, "Push", true);
+                if (initialConflict.Conflict == 0 || File.ReadAllText(initialL) != "aaaa" || File.ReadAllText(initialR) != "bbbb")
+                    throw new Exception("initial same-size conflict lost a file version");
+                FileRecord first = new FileRecord(); first.Full = initialL; first.Length = 4; first.MtimeUtc = stamp;
+                FileRecord second = new FileRecord(); second.Full = initialR; second.Length = 4; second.MtimeUtc = stamp;
+                if (SyncEngine.Classify(first, second, null).Kind == "same") throw new Exception("same-size differing contents were marked synced");
+                using (FileStream locked = new FileStream(initialR, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    rejected = false;
+                    try { SyncEngine.Classify(first, second, null); } catch (IOException) { rejected = true; }
+                    if (!rejected) throw new Exception("an unreadable comparison was reported as matching");
+                }
+                File.WriteAllText(initialR, "aaaa");
+                if (SyncEngine.Classify(first, second, null).LastSynced != "") throw new Exception("a modification timestamp was reported as the sync time");
+                string failedState = Path.Combine(root, "failed-initial.json");
+                SyncEngine.SyncFolder("Pull", existingLocal, existingCloud, failedState, true);
+                if (File.ReadAllText(initialL) != "aaaa") throw new Exception("refresh before baseline changed the local file");
+                string missingRoot = Path.Combine(root, "not-mounted", "cloud");
+                SyncStats unavailable = SyncEngine.SyncFolder("Pull", arbitraryLocal, missingRoot, Store.StatePath(attachment.Id), true);
+                if (unavailable.Errors == 0 || !File.Exists(Path.Combine(arbitraryLocal, "notes", "project.txt")))
+                    throw new Exception("unavailable root was treated as a deletion");
+                string pairedLocalFile = Path.Combine(arbitraryLocal, "notes", "project.txt");
+                string pairedCloudFile = Path.Combine(attachmentRemote, "notes", "project.txt");
+                DateTime baselineTime = File.GetLastWriteTimeUtc(pairedLocalFile);
+                File.WriteAllText(pairedLocalFile, "updated");
+                File.SetLastWriteTimeUtc(pairedLocalFile, baselineTime.AddSeconds(1));
+                SyncStats quickEdit = SyncEngine.SyncLink(attachment, "Push", true);
+                if (quickEdit.Up != 1 || File.ReadAllText(pairedCloudFile) != "updated") throw new Exception("same-size edit within three seconds was skipped");
+                File.WriteAllText(pairedLocalFile, "local-v");
+                File.SetLastWriteTimeUtc(pairedLocalFile, baselineTime.AddSeconds(2));
+                File.WriteAllText(pairedCloudFile, "cloud-v");
+                File.SetLastWriteTimeUtc(pairedCloudFile, baselineTime.AddSeconds(3));
+                SyncStats simultaneous = SyncEngine.SyncLink(attachment, "Push", true);
+                if (simultaneous.Conflict != 1 || File.ReadAllText(pairedLocalFile) != "local-v" || File.ReadAllText(pairedCloudFile) != "cloud-v")
+                    throw new Exception("simultaneous edits did not preserve both versions");
+                Snap simultaneousState = Store.ReadState(Store.StatePath(attachment.Id))[@"notes\project.txt"];
+                if (!simultaneousState.Hold) throw new Exception("a conflict was recorded as in sync");
+                File.Delete(Path.Combine(arbitraryLocal, "notes", "project.txt"));
+                SyncEngine.SyncLink(attachment, "Push", false);
+                SyncEngine.SyncLink(attachment, "Pull", false);
+                if (!File.Exists(Path.Combine(arbitraryLocal, "notes", "project.txt"))) throw new Exception("lifecycle backup and refresh did not restore cloud-only content");
+                if (Store.ReadLinks().Find(delegate(LinkFolder f) { return f.Id == remembered.Id; }).Files.Count != 1)
+                    throw new Exception("legacy partial selection was not preserved");
+                if (!UpdateManager.IsNewer("v1.4.0", "1.3.1") || UpdateManager.IsNewer("v1.3.1", "1.4.0")
+                    || UpdateManager.IsNewer("v1.4.0-beta", "1.3.1") || UpdateManager.IsNewer("garbage", "1.3.1"))
+                    throw new Exception("update version selection was incorrect");
+                string updateSample = Path.Combine(root, "update-sample.exe");
+                File.WriteAllBytes(updateSample, new byte[] { 97, 98, 99 });
+                UpdateManager.VerifyInstaller(updateSample, "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+                rejected = false;
+                try { UpdateManager.VerifyInstaller(updateSample, "sha256:" + new string('0', 64)); } catch (IOException) { rejected = true; }
+                if (!rejected) throw new Exception("corrupt installer passed checksum verification");
+                rejected = false;
+                try { UpdateManager.VerifyInstaller(updateSample, ""); } catch (IOException) { rejected = true; }
+                if (!rejected) throw new Exception("installer without a checksum was accepted");
+                UpdateManager.SetAutomatic(false);
+                if (UpdateManager.AutomaticEnabled) throw new Exception("auto-update setting was not saved");
+                UpdateManager.SetAutomatic(true);
+                if (!UpdateManager.AutomaticEnabled) throw new Exception("auto-update setting was not enabled");
+
+                string junctionTarget = Path.Combine(root, "junction-target");
+                string junction = Path.Combine(existingLocal, "redirected");
+                Directory.CreateDirectory(junctionTarget);
+                using (System.Diagnostics.Process command = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                    "cmd.exe", "/c mklink /J \"" + junction + "\" \"" + junctionTarget + "\"")
+                    { UseShellExecute = false, CreateNoWindow = true, WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden }))
+                {
+                    command.WaitForExit();
+                    if (command.ExitCode != 0) throw new Exception("could not create the isolated junction test");
+                }
+                try
+                {
+                    if (!SyncEngine.IsRedirect(junction, File.GetAttributes(junction))) throw new Exception("junction tag was not recognized");
+                    rejected = false;
+                    try { SyncEngine.Link(junction, attachedProvider.Id, "junction-copy"); } catch (ArgumentException) { rejected = true; }
+                    if (!rejected) throw new Exception("junction attachment was accepted");
+                    rejected = false;
+                    try { SyncEngine.SyncFolder("Push", existingLocal, existingCloud, failedState, true); } catch (IOException) { rejected = true; }
+                    if (!rejected) throw new Exception("sync followed a junction outside its paired folder");
+                }
+                finally { Directory.Delete(junction); }
+
+                string deniedFolder = Path.Combine(existingCloud, "inaccessible");
+                Directory.CreateDirectory(deniedFolder);
+                System.Security.AccessControl.DirectorySecurity originalAcl = Directory.GetAccessControl(deniedFolder);
+                try
+                {
+                    System.Security.AccessControl.DirectorySecurity deniedAcl = Directory.GetAccessControl(deniedFolder);
+                    deniedAcl.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+                        System.Security.Principal.WindowsIdentity.GetCurrent().User,
+                        System.Security.AccessControl.FileSystemRights.ListDirectory,
+                        System.Security.AccessControl.AccessControlType.Deny));
+                    Directory.SetAccessControl(deniedFolder, deniedAcl);
+                    rejected = false;
+                    try { SyncEngine.SyncFolder("Pull", existingLocal, existingCloud, failedState, true); }
+                    catch (IOException) { rejected = true; }
+                    if (!rejected || !File.Exists(initialL)) throw new Exception("failed directory scan did not stop sync safely");
+                }
+                finally { Directory.SetAccessControl(deniedFolder, originalAcl); }
 
                 File.WriteAllText(resultPath, "self-test passed");
                 return 0;
