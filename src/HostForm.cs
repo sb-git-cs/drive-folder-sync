@@ -21,9 +21,13 @@ namespace DriveFolderSync
         readonly object gate = new object();
         readonly List<FileSystemWatcher> watchers = new List<FileSystemWatcher>();
         volatile bool pullDone;
+        volatile bool pushDone;
+        DateTime nextPeriodicPush = DateTime.Now.AddMinutes(15);
+        DateTime nextPushTry;
         volatile bool checkingUpdate;
         volatile bool inTick;
         volatile bool shuttingDown;
+        volatile SyncProgress activity;
         DateTime pullDeadline;
         DateTime nextPullTry;
         readonly HashSet<string> refreshed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -67,8 +71,8 @@ namespace DriveFolderSync
             ToolStripItem open = menu.Items.Add("Open Drive Folder Sync", Theme.Glyph(Glyphs.FolderOpen, Theme.S(16), Theme.Text), new EventHandler(Open_Click));
             open.Font = Theme.Strong;
             menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Back up all to cloud now", Theme.Glyph(Glyphs.Upload, Theme.S(16), Theme.Text), new EventHandler(Push_Click));
             menu.Items.Add("Refresh all from cloud", Theme.Glyph(Glyphs.Download, Theme.S(16), Theme.Text), new EventHandler(Pull_Click));
-            menu.Items.Add("Upload all to cloud", Theme.Glyph(Glyphs.Upload, Theme.S(16), Theme.Text), new EventHandler(Push_Click));
             foreach (ToolStripItem item in menu.Items)
             {
                 item.ImageScaling = ToolStripItemImageScaling.None;
@@ -125,18 +129,52 @@ namespace DriveFolderSync
             base.WndProc(ref m);
         }
 
+        SyncProgress Track(string direction)
+        {
+            SyncProgress tracked = new SyncProgress(direction);
+            activity = tracked;
+            return tracked;
+        }
+
+        void Untrack(SyncProgress tracked)
+        {
+            if (activity == tracked) activity = null;
+        }
+
+        void ShowActivity()
+        {
+            SyncProgress tracked = activity;
+            string text = tracked == null ? "Drive Folder Sync" : "Drive Folder Sync\n" + tracked.Brief();
+            if (text.Length > 63) text = text.Substring(0, 63);
+            if (tray.Text != text) tray.Text = text;
+        }
+
         void OnShutdown()
         {
             if (shuttingDown) return;
             shuttingDown = true;
+            Store.RecordShutdownStart();
             Store.Log("shutdown sync starting");
             ShutdownBlockReasonCreate(Handle, "Backing up attached folders to the cloud");
             try
             {
-                DateTime until = DateTime.UtcNow.AddSeconds(20);
-                while (inTick && DateTime.UtcNow < until) Thread.Sleep(200);
-                SyncEngine.SyncAll("Push");
-                Thread.Sleep(5000);
+                DateTime until = DateTime.UtcNow.AddSeconds(5);
+                while (inTick && DateTime.UtcNow < until) Thread.Sleep(100);
+                // The backup runs on a worker so the shutdown screen can show its progress.
+                SyncProgress tracked = Track("Push");
+                Exception failure = null;
+                Thread worker = new Thread(delegate()
+                {
+                    try { SyncEngine.SyncAll("Push", tracked); }
+                    catch (Exception ex) { failure = ex; }
+                });
+                worker.IsBackground = true;
+                worker.Start();
+                while (!worker.Join(1000))
+                    ShutdownBlockReasonCreate(Handle, "Backing up attached folders to the cloud\n" + tracked.Describe());
+                Untrack(tracked);
+                if (failure != null) throw failure;
+                Store.RecordShutdownComplete();
                 Store.Log("shutdown sync finished");
             }
             catch (Exception ex)
@@ -151,6 +189,7 @@ namespace DriveFolderSync
 
         void Timer_Tick(object sender, EventArgs e)
         {
+            ShowActivity();
             if (inTick || shuttingDown || checkingUpdate) return;
             inTick = true;
             ThreadPool.QueueUserWorkItem(new WaitCallback(Tick));
@@ -163,36 +202,77 @@ namespace DriveFolderSync
                 if (!pullDone && !shuttingDown && DateTime.Now >= nextPullTry)
                 {
                     nextPullTry = DateTime.Now.AddSeconds(15);
-                    using (SyncEngine.LockState(120))
+                    SyncProgress tracked = Track("Pull");
+                    try
                     {
-                        List<LinkFolder> links = Store.ReadLinks();
-                        List<Provider> providers = Store.DetectProviders();
-                        foreach (LinkFolder folder in links)
+                        using (SyncEngine.LockState(120))
                         {
-                            if (shuttingDown || refreshed.Contains(folder.Id)) continue;
-                            Provider provider = Store.FindProvider(providers, folder.ProviderId);
-                            if (provider == null || !provider.IsOnline) continue;
-                            try
+                            List<LinkFolder> links = Store.ReadLinks();
+                            List<Provider> providers = Store.DetectProviders();
+                            foreach (LinkFolder folder in links)
                             {
-                                SyncStats stats = SyncEngine.SyncLink(folder, "Pull", false);
-                                if (stats.Errors == 0) refreshed.Add(folder.Id);
+                                if (shuttingDown || refreshed.Contains(folder.Id)) continue;
+                                Provider provider = Store.FindProvider(providers, folder.ProviderId);
+                                if (provider == null || !provider.IsOnline) continue;
+                                try
+                                {
+                                    SyncStats stats = SyncEngine.SyncLink(folder, "Pull", false, tracked);
+                                    if (stats.Errors == 0) refreshed.Add(folder.Id);
+                                }
+                                catch (Exception ex)
+                                {
+                                    folder.LastErrors = 1;
+                                    Store.Log("boot refresh deferred for " + folder.Local + ": " + ex.Message);
+                                }
                             }
-                            catch (Exception ex)
-                            {
-                                folder.LastErrors = 1;
-                                Store.Log("boot refresh deferred for " + folder.Local + ": " + ex.Message);
-                            }
+                            Store.SaveLinks(links);
+                            pullDone = true;
+                            foreach (LinkFolder folder in links) if (!refreshed.Contains(folder.Id)) pullDone = false;
                         }
-                        Store.SaveLinks(links);
-                        pullDone = true;
-                        foreach (LinkFolder folder in links) if (!refreshed.Contains(folder.Id)) pullDone = false;
                     }
+                    finally { Untrack(tracked); }
                     if (pullDone) Store.Log("boot refresh finished");
                     else if (DateTime.Now > pullDeadline)
                     {
                         pullDone = true;
                         Store.Log("boot refresh finished for available folders; unavailable folders will retry next sign-in");
                     }
+                }
+                if (pullDone && !pushDone && !shuttingDown && (Store.BackupOnStartupEnabled || Store.WasLastShutdownInterrupted()) && DateTime.Now >= nextPushTry)
+                {
+                    nextPushTry = DateTime.Now.AddSeconds(30);
+                    if (Store.WasLastShutdownInterrupted())
+                    {
+                        Store.Log("resuming backup because previous shutdown was interrupted by Windows");
+                        Store.ClearShutdownMarker();
+                    }
+                    Store.Log("boot backup starting");
+                    SyncProgress tracked = Track("Push");
+                    try
+                    {
+                        SyncStats stats = SyncEngine.SyncAll("Push", tracked);
+                        pushDone = true;
+                        Store.Log("boot backup finished: uploaded=" + stats.Up + " errors=" + stats.Errors);
+                    }
+                    catch (Exception ex)
+                    {
+                        Store.Log("boot backup deferred: " + ex.Message);
+                    }
+                    finally { Untrack(tracked); }
+                }
+                else if (pullDone && pushDone && !shuttingDown && DateTime.Now >= nextPeriodicPush)
+                {
+                    nextPeriodicPush = DateTime.Now.AddMinutes(15);
+                    SyncProgress tracked = Track("Push");
+                    try
+                    {
+                        SyncEngine.SyncAll("Push", tracked);
+                    }
+                    catch (Exception ex)
+                    {
+                        Store.Log("periodic backup error: " + ex.Message);
+                    }
+                    finally { Untrack(tracked); }
                 }
                 DrainWatch();
             }
@@ -304,16 +384,21 @@ namespace DriveFolderSync
                 catch { }
                 if (pullDone && linked != null)
                 {
-                    using (SyncEngine.LockState(120))
+                    SyncProgress tracked = Track("Pull");
+                    try
                     {
-                        List<LinkFolder> links = Store.ReadLinks();
-                        foreach (LinkFolder folder in links)
+                        using (SyncEngine.LockState(120))
                         {
-                            if (string.Equals(folder.Id, linked.Id, StringComparison.OrdinalIgnoreCase))
-                                SyncEngine.SyncLink(folder, "Pull", false);
+                            List<LinkFolder> links = Store.ReadLinks();
+                            foreach (LinkFolder folder in links)
+                            {
+                                if (string.Equals(folder.Id, linked.Id, StringComparison.OrdinalIgnoreCase))
+                                    SyncEngine.SyncLink(folder, "Pull", false, tracked);
+                            }
+                            Store.SaveLinks(links);
                         }
-                        Store.SaveLinks(links);
                     }
+                    finally { Untrack(tracked); }
                 }
             }
             catch (Exception ex)
@@ -328,8 +413,19 @@ namespace DriveFolderSync
             catch (Exception ex) { Store.Log("open failed: " + ex.Message); }
         }
 
-        void Pull_Click(object sender, EventArgs e) { ThreadPool.QueueUserWorkItem(delegate { try { SyncEngine.SyncAll("Pull"); } catch (Exception ex) { Store.Log(ex.Message); } }); }
-        void Push_Click(object sender, EventArgs e) { ThreadPool.QueueUserWorkItem(delegate { try { SyncEngine.SyncAll("Push"); } catch (Exception ex) { Store.Log(ex.Message); } }); }
+        void Pull_Click(object sender, EventArgs e) { SyncAllInBackground("Pull"); }
+        void Push_Click(object sender, EventArgs e) { SyncAllInBackground("Push"); }
+
+        void SyncAllInBackground(string direction)
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                SyncProgress tracked = Track(direction);
+                try { SyncEngine.SyncAll(direction, tracked); }
+                catch (Exception ex) { Store.Log(ex.Message); }
+                finally { Untrack(tracked); }
+            });
+        }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {

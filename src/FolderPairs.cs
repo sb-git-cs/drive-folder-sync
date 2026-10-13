@@ -251,6 +251,7 @@ namespace DriveFolderSync
                 using (LinkDialog dialog = new LinkDialog(found, provider, picker.SelectedPath, relative))
                 {
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                    if (!EnsureGoogleSignIn(dialog.Chosen)) return;
                     AttachAndBackup(dialog.LocalPath, dialog.Chosen.Id, dialog.RelativePath);
                 }
             }
@@ -259,6 +260,8 @@ namespace DriveFolderSync
         void AttachAndBackup(string local, string providerId, string remoteRelative)
         {
         SetBusy(true, "Attaching folder and backing up…");
+        SyncProgress tracked = new SyncProgress("Push");
+        TrackProgress(tracked);
         ThreadPool.QueueUserWorkItem(delegate
         {
             string error = null;
@@ -271,7 +274,7 @@ namespace DriveFolderSync
                 {
                     List<LinkFolder> saved = Store.ReadLinks();
                     attached = saved.Find(delegate(LinkFolder link) { return link.Id == attached.Id; });
-                    stats = SyncEngine.SyncLink(attached, "Push", false);
+                    stats = SyncEngine.SyncLink(attached, "Push", false, tracked);
                     Store.SaveLinks(saved);
                 }
             }
@@ -316,7 +319,17 @@ namespace DriveFolderSync
                 "These names already exist in " + destination + ". Files with the same name are replaced and folders are merged. Other files are kept.",
                 existing, "Replace", MessageKind.Warning))
                 return true;
+            Provider pairDrive = Store.FindProvider(found, link.ProviderId);
+            bool google = GoogleAuth.EmailOf(pairDrive) != null;
+            if (google && !EnsureGoogleSignIn(pairDrive)) return true;
             SetBusy(true,"Copying to " + (toLocal ? "this PC…" : "the cloud…"));
+            SyncProgress tracked = null;
+            if (google)
+            {
+                tracked = new SyncProgress(toLocal ? "Pull" : "Push");
+                tracked.StartFolder(link.Local, 1, 1);
+                TrackProgress(tracked);
+            }
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string error = null;
@@ -330,13 +343,19 @@ namespace DriveFolderSync
                             throw new IOException("The selected folder pair is not available.");
                         List<string> dirs = new List<string>();
                         List<string> files = new List<string>();
+                        List<KeyValuePair<string, string>> items = new List<KeyValuePair<string, string>>();
                         foreach (string source in sources)
                         {
                             if (!Store.IsUnder(source, sourceRoot) || Store.Norm(source) == Store.Norm(sourceRoot))
                                 throw new IOException("Drag files or subfolders from the other side of this folder pair.");
                             string rel = Store.Relative(Path.Combine(destination, Path.GetFileName(source)), targetRoot);
-                            skipped += SyncEngine.CopyInto(source, targetRoot, rel, dirs, files);
+                            // Google Drive items move through the API instead of Google Drive for desktop's cache.
+                            if (google) items.Add(new KeyValuePair<string, string>(toLocal ? Store.Relative(source, cloud) : source, rel));
+                            else skipped += SyncEngine.CopyInto(source, targetRoot, rel, dirs, files);
                         }
+                        if (google)
+                            skipped += SyncEngine.TransferThroughRemote(SyncEngine.RemoteFor(provider, link.RemoteRelative, cloud),
+                                link.Local, toLocal, items, dirs, files, tracked);
                         if (link.Partial) SyncEngine.RememberSelection(link.ProviderId, link.Local, dirs, files);
                     }
                 }

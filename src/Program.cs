@@ -6,8 +6,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Drive Folder Sync")]
 [assembly: AssemblyProduct("Drive Folder Sync")]
-[assembly: AssemblyVersion("1.5.3.0")]
-[assembly: AssemblyFileVersion("1.5.3.0")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 
 namespace DriveFolderSync
 {
@@ -16,6 +16,9 @@ namespace DriveFolderSync
         [STAThread]
         static void Main(string[] args)
         {
+            // Without these, .NET rejects paths longer than 260 characters as "Illegal characters in path".
+            AppContext.SetSwitch("Switch.System.IO.UseLegacyPathHandling", false);
+            AppContext.SetSwitch("Switch.System.IO.BlockLongPaths", false);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             try

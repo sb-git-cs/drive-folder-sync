@@ -161,6 +161,7 @@ $lines.Add('/out:' + (Join-Path $dist 'DriveFolderSyncSetup.exe'))
 $lines.Add('/reference:System.Windows.Forms.dll')
 $lines.Add('/reference:System.Drawing.dll')
 $lines.Add('/reference:System.Web.Extensions.dll')
+$lines.Add('/reference:System.Security.dll')
 foreach ($source in $sources) { $lines.Add($source) }
 $response = Join-Path $root 'build.rsp'
 [System.IO.File]::WriteAllLines($response, $lines.ToArray())

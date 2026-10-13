@@ -53,6 +53,9 @@ namespace DriveFolderSync
         public string Full;
         public long Length;
         public DateTime MtimeUtc;
+        // Set for Google Drive files listed through the API.
+        public string Id;
+        public string Md5;
     }
 
     public class Snap
@@ -74,11 +77,13 @@ namespace DriveFolderSync
         public int Conflict;
         public int Errors;
         public int Links;
+        public bool Canceled;
+        public string Problem;
     }
 
     public class Store
     {
-        public const string Version = "1.5.3";
+        public const string Version = "1.6.0";
         static readonly object LogGate = new object();
         static string rootOverride;
         static string logOverride;
@@ -329,6 +334,85 @@ namespace DriveFolderSync
             }
             cfg["customProviders"] = keep;
             WriteObject(ConfigPath, cfg);
+        }
+
+        public static bool BackupOnStartupEnabled
+        {
+            get
+            {
+                Dictionary<string, object> config = ReadConfig();
+                return !config.ContainsKey("backupOnStartup") || GetBool(config, "backupOnStartup");
+            }
+        }
+
+        public static void SetBackupOnStartup(bool enabled)
+        {
+            using (SyncEngine.LockState(120))
+            {
+                Dictionary<string, object> config = ReadConfig();
+                config["backupOnStartup"] = enabled;
+                WriteObject(ConfigPath, config);
+            }
+        }
+
+        public static string ShutdownMarkerPath
+        {
+            get { return Path.Combine(Root, "shutdown-status.json"); }
+        }
+
+        public static void RecordShutdownStart()
+        {
+            try
+            {
+                Dictionary<string, object> map = new Dictionary<string, object>();
+                map["started"] = DateTime.UtcNow.ToString("o");
+                map["completed"] = false;
+                WriteObject(ShutdownMarkerPath, map);
+            }
+            catch { }
+        }
+
+        public static void RecordShutdownComplete()
+        {
+            try
+            {
+                Dictionary<string, object> map = new Dictionary<string, object>();
+                map["started"] = DateTime.UtcNow.ToString("o");
+                map["completed"] = true;
+                map["finished"] = DateTime.UtcNow.ToString("o");
+                WriteObject(ShutdownMarkerPath, map);
+            }
+            catch { }
+        }
+
+        public static bool WasLastShutdownInterrupted()
+        {
+            try
+            {
+                if (!File.Exists(ShutdownMarkerPath)) return false;
+                Dictionary<string, object> map = ReadObject(ShutdownMarkerPath);
+                if (map == null) return false;
+                return map.ContainsKey("completed") && !GetBool(map, "completed");
+            }
+            catch { return false; }
+        }
+
+        public static void ClearShutdownMarker()
+        {
+            try { if (File.Exists(ShutdownMarkerPath)) File.Delete(ShutdownMarkerPath); } catch { }
+        }
+
+        public static bool IsHostRunning()
+        {
+            try
+            {
+                if (!File.Exists(PidFile)) return false;
+                int pid;
+                if (!int.TryParse(File.ReadAllText(PidFile).Trim(), out pid)) return false;
+                System.Diagnostics.Process p = System.Diagnostics.Process.GetProcessById(pid);
+                return p != null && !p.HasExited && string.Equals(p.ProcessName, "DriveFolderSync", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
         }
 
         static Dictionary<string, object> ProviderToMap(Provider provider)
@@ -757,7 +841,7 @@ namespace DriveFolderSync
             return list;
         }
 
-        static IEnumerable AsEnumerable(object value)
+        public static IEnumerable AsEnumerable(object value)
         {
             IEnumerable enumerable = value as IEnumerable;
             if (enumerable == null || value is string) return new object[0];

@@ -1,3 +1,37 @@
+# Review — 1.6.0
+
+## Audit findings (2026-10-11) and their status
+
+Root cause of drive C filling up: the app copied attached folders into Google Drive for desktop's virtual drive (G:). Drive for desktop keeps everything written there in `%LOCALAPPDATA%\Google\DriveFS\<account>\content_cache` until uploaded, and often afterwards. The 36 GB `D:\project-documents` backup put 34 GB there. With the owner's approval the cache was emptied while Drive for desktop was closed (C: free 44.7 → 66.4 GB). The originals on D: were untouched.
+
+| # | Finding | Status |
+| --- | --- | --- |
+| 1 | Every Google Drive backup duplicated the data on C: (Drive for desktop cache) | Fixed: Google Drive goes through the Drive API (`GoogleRemote`) |
+| 2 | "Uploaded"/"Synced" only meant copied into the provider folder | Fixed for Google Drive: completion means stored in Drive, verified by MD5. Other providers still depend on their desktop app (documented) |
+| 3 | Browsing read cloud file contents (`Classify` → `SameContents`), forcing downloads | Fixed: browsing compares size and date only |
+| 4 | Paths over 260 characters failed ("Illegal characters in path"; 8 files) | Fixed: long-path switches set at startup |
+| 5 | Copies not atomic; state saved only at the end of a folder | Fixed: temp file + atomic move; state saved every 100 files or 30 s |
+| 6 | Large shutdown backups can be cut off; power on did not back up | Fixed: automatic backup at startup/sign-in catches up; shutdown artificial sleep removed; shutdown interruption tracked & resumed; continuous background backup prevents backlog; UI shows pending files and power status dialog |
+| 7 | Renames/moves re-upload everything and leave old copies in the cloud | Open: needs rename detection; cloud copies are never deleted by design |
+| 8 | No way to stop a running sync | Fixed: **Stop** in the status bar |
+| 9 | No size information before or during a backup | Fixed: progress, speed, time left; space/quota check before starting |
+| 10 | `.`-folders, `node_modules`, `.git` skipped silently | Open: should be listed in the summary and README |
+| 11 | Hidden auto-attach of new Desktop/Documents/Downloads folders | Open: undocumented; consider an opt-in setting |
+| 12 | Removing an attachment leaves the cloud copy and caches | Open (cloud copy kept by design) |
+| 13 | Errors only as a count | Partly fixed: **Sync all** shows the first failure; a full failed-files list is still open |
+| 14 | Updater checks GitHub's checksum but the installer is unsigned | Open: needs a code-signing certificate |
+| 15 | Two PCs backing up to the same cloud folder pull each other's files | Open: document or add a per-PC folder option |
+| 16 | Cloud-side renames come down as new files | Open |
+
+## Google Drive API design
+
+- `IRemote` separates the sync decisions from the transport. `FileSystemRemote` keeps the old behavior for OneDrive, Dropbox and added folders; `GoogleRemote` lists with batched `files.list` queries (30 folders per query) and uploads in place (`PATCH`), which keeps file IDs and Drive version history.
+- Sign-in uses the installed-app OAuth flow with a loopback redirect and PKCE. The client ID and secret are entered by the owner (never committed); refresh tokens are DPAPI-encrypted per Windows user.
+- Uploads: up to 5 MB multipart, larger ones resumable in 8 MB chunks with status queries after failures. The local MD5 is compared with Drive's `md5Checksum` after every upload. Downloads go to `*.dfs-partial.tmp`, are verified by size and MD5, get the cloud modified time, and are moved into place.
+- Google Docs, shortcuts and names Windows can't store are skipped and counted in the log. Duplicate names in Drive: the newest file wins and the duplicate is logged.
+- /selftest runs the real engine against `FakeDrive`, an in-memory Drive API on a loopback port. It covers paging, retries after a failed list and a failed chunk, resumable and multipart uploads, apostrophes in names, empty files, a 280-character path, in-place edits, cloud changes, Google Docs/shortcut skipping, cloud deletion keeping local files, checksum rejection, quota rejection, Stop, attach-time comparison, and drag-and-drop in both directions.
+- Not yet exercised against the real Google API: it needs the owner's sign-in client.
+
 # Review — 1.5.3
 
 ## Bug fix in 1.5.3

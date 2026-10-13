@@ -27,13 +27,34 @@ namespace DriveFolderSync
             KillHost(Store.PidFile);
             KillOtherCopies();
             if (!string.Equals(Path.GetFullPath(source), Path.GetFullPath(dest), StringComparison.OrdinalIgnoreCase))
-                File.Copy(source, dest, true);
+            {
+                for (int attempt = 0; attempt < 8; attempt++)
+                {
+                    try
+                    {
+                        File.Copy(source, dest, true);
+                        break;
+                    }
+                    catch (IOException)
+                    {
+                        if (attempt == 7) throw;
+                        Thread.Sleep(400);
+                    }
+                }
+            }
             WriteTask(dest);
             WriteShortcut(dest);
             WriteContextMenu(dest);
             WriteUninstallEntry(dest);
             Store.Log("installed Drive Folder Sync " + Store.Version);
-            Process.Start(new ProcessStartInfo(dest, "/host") { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
+            for (int wait = 0; wait < 10 && !Store.IsHostRunning(); wait++)
+            {
+                Thread.Sleep(200);
+            }
+            if (!Store.IsHostRunning())
+            {
+                Process.Start(new ProcessStartInfo(dest, "/host") { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
+            }
             if (startUi) Process.Start(new ProcessStartInfo(dest) { UseShellExecute = true });
         }
 
@@ -157,7 +178,8 @@ namespace DriveFolderSync
                 + "$action = New-ScheduledTaskAction -Execute $env:DFS_EXE -Argument '/host'\r\n"
                 + "$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME\r\n"
                 + "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)\r\n"
-                + "Register-ScheduledTask -TaskName 'DriveFolderSync' -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null\r\n";
+                + "Register-ScheduledTask -TaskName 'DriveFolderSync' -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null\r\n"
+                + "Start-ScheduledTask -TaskName 'DriveFolderSync' -ErrorAction SilentlyContinue\r\n";
             int code = RunPowerShell(script, exe);
             if (code != 0) throw new InvalidOperationException("Windows did not create the sign-in task.");
         }
@@ -226,7 +248,7 @@ namespace DriveFolderSync
     {
         static readonly string[] Included = new string[]
         {
-            "Starts when you sign in and refreshes attached folders from the cloud",
+            "Starts when you sign in, refreshes from the cloud, and backs up local changes",
             "Backs up attached folders when Windows shuts down",
             "Adds “Attach to Drive Folder Sync” to the folder right-click menu",
             "Adds Drive Folder Sync to the Start menu"

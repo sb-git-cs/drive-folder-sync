@@ -1,22 +1,21 @@
 # Team handoff
 
 ## Objective
-Version 1.5.3 lets the updater outlast an unreachable GitHub download address. Released earlier: 1.5.2 (drag-and-drop skips links) and 1.5.1 (link-safe sync, list columns that fit the pane).
+Version 1.6.0: Google Drive backups upload directly through the Drive API (no second copy in Google Drive for desktop's cache on C:), with progress/speed/ETA, Stop, space checks, long paths, atomic copies, power-on/shutdown backup reliability, continuous background sync, and UI lifecycle status.
 
 ## Baseline
-main at 2318070. Release v1.5.2 published.
+main at 38fe66c. Release v1.5.3 published and installed on the owner's PC. Google Drive for desktop's 34 GB content cache was emptied with the owner's approval on 2026-10-11.
 
 ## Assignments
 | Agent | Assignment | Status |
 | --- | --- | --- |
-| Claude | Fix the update download timeout for 1.5.3 | Complete; committed to main for release |
+| Claude | Audit; Drive API backup; progress and Stop for 1.6.0 | Complete |
+| Antigravity | Lifecycle audit (power on/off sync); startup backup; shutdown recovery; UI power status | Complete & tested locally |
 
 ## Validation and delivery
-Local build, `/selftest` and `/uitest` pass. Owner rule: sync never deletes local files, even when the cloud deletes them. New tests cover junction skipping in sync and drag-and-drop copies and the absence of a horizontal list scrollbar at the default and minimum window sizes. See review.md.
+Local build, `/selftest` (including FakeDrive and startup/shutdown lifecycle tracking) and `/uitest` pass. Owner rule: sync never deletes local files, even when the cloud deletes them. See review.md for the audit table and the API design.
 
 ## Next steps
-- Installs older than 1.5.3 on affected networks need one manual install.
-- Follow-ups not done:
-  - viewing large pending folders compares file contents on every browse;
-  - dark mode is unsupported;
-  - the README doesn't document the auto-link watcher for Desktop/Documents/Downloads.
+- The owner creates the Google Cloud Desktop sign-in client (README, Connect Google Drive) and signs in. Then run a real backup of a small test folder before re-attaching D:\project-documents.
+- Release 1.6.0 once approved.
+- Open audit items 7, 10, 11, 13–16 in review.md.

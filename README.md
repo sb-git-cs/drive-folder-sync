@@ -10,6 +10,20 @@ Download [DriveFolderSyncSetup.exe](https://github.com/sb-git-cs/drive-folder-sy
 
 The cloud provider’s desktop app must be installed and its folder or mounted drive available. Detected Google Drive, OneDrive and Dropbox accounts appear as tabs. **Add cloud drive** registers the folder used by another cloud desktop client. Choose **Attach folder** for a local folder you want to back up. A local backup folder added as a drive will be rejected as a source; right-click its unused drive tab and choose **Remove added cloud drive** to correct the saved entry. Files are kept.
 
+## Connect Google Drive
+
+Google Drive backups upload straight from your folders to Google Drive, and refreshes download straight back to them. Nothing is copied through Google Drive for desktop, so no second copy of your files builds up in its cache on drive C. Google Drive for desktop still needs to be installed and signed in so its accounts appear as tabs.
+
+Connecting takes a free Google Cloud sign-in client, created once:
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) and create a project, for example *Drive Folder Sync*.
+2. In **APIs & Services → Library**, enable the **Google Drive API**.
+3. In **Google Auth Platform** (also listed as **OAuth consent screen**), set up an **External** app with your own email address. Under **Audience**, choose **Publish app** so that sign-ins don't expire after seven days. Google doesn't need to verify an app you use yourself.
+4. In **Clients** (or **Credentials → Create credentials → OAuth client ID**), create a client of type **Desktop app**, then copy its client ID and client secret.
+5. In Drive Folder Sync, choose **… → Google Drive sign-in…**, paste both values, and choose **Sign in** next to each account. Google shows an "unverified app" warning because the client is yours: choose **Advanced → Go to Drive Folder Sync**.
+
+The sign-in is stored encrypted for your Windows account in `%LOCALAPPDATA%\DriveFolderSync\google`. **Sign out** in the same dialog removes it. Other drives, such as OneDrive and Dropbox, still copy files into the provider's folder, and that provider's app uploads them.
+
 ## Attach any local folder
 
 For example, pair **D:\project-documents** with **Google Drive\project-documents**:
@@ -17,7 +31,9 @@ For example, pair **D:\project-documents** with **Google Drive\project-documents
 1. Select the cloud drive tab and browse to the desired backup location.
 2. Choose **Attach folder** and select `D:\project-documents`.
 3. Keep the suggested cloud folder name, enter a different name, or browse to an existing cloud folder.
-4. Choose **Attach & back up**. A new destination is created and the initial backup starts.
+4. Choose **Attach & back up**. If the Google Drive account isn't connected yet, the sign-in dialog opens first. A new destination is created and the initial backup starts.
+
+While a backup or refresh runs, the status bar shows the folder, the amount copied out of the total, the speed, the time left and the file count. **Stop** ends it after the current file; files already copied stay copied, and the next run continues from there.
 
 The local folder stays in its original location. Each drive can have several folder pairs; select one from the picker above the local pane. The panes follow the same relative path inside that pair. **Back up to cloud**, **Refresh from cloud**, and drag-and-drop target the selected pair. Dropping onto a name that already exists asks before replacing it. Differing files in an existing destination are retained and marked for review during initial attachment.
 
@@ -25,15 +41,19 @@ The local folder stays in its original location. Each drive can have several fol
 
 ## Automatic backup and refresh
 
-- **At Windows sign-in:** available attached folders refresh from the cloud. Disconnected drives retry for up to eight minutes without blocking other drives.
+- **At Windows startup & sign-in:** available attached folders refresh from the cloud and automatically back up local changes to the cloud. If a previous Windows shutdown was interrupted before completing, catch-up backup runs immediately.
 - **At shutdown or sign-out:** local changes back up to the cloud folder.
+- **Continuous background backup:** attached folders sync periodically while the PC is running so shutdown backups never pile up.
+- **Sync & power backup status:** choose **… → Sync and power backup status…** to check background service health, power-on/shutdown status, and pending file counts, or toggle **… → Back up to cloud automatically at startup**.
 - **After local deletion:** the cloud backup stays. The cloud pane highlights it as **Only in cloud**. The next sign-in refresh downloads it again.
 - **After cloud trash or a move:** once the cloud desktop client removes the original path, browsing or pressing **F5** shows **Missing in the cloud** without a synced timestamp. Restore the folder in the cloud and refresh to see it again.
 - **After cloud deletion:** nothing is deleted on this PC. The local copy stays and is shown as **Missing in the cloud**. Drive Folder Sync never deletes local files; delete them yourself if you no longer need them.
 - **When both sides change:** conflict handling preserves versions. Unreadable scans stop sync rather than treating files as deleted.
 - **Symbolic links and junctions:** these are skipped, and the rest of the folder is backed up. Nothing is copied into or through a link, including when you drag folders between panes. Attach the link's target folder separately if it needs a backup.
 
-Green statuses indicate new or changed local files. Red statuses indicate cloud changes, cloud-only files, or conflicts. **Last synced** records successful sync activity rather than the file’s modification date. Status describes the mounted provider folder; the provider’s desktop app handles online upload. Keep that app running for cloud transfer.
+Green statuses indicate new or changed local files. Red statuses indicate cloud changes, cloud-only files, or conflicts. **Last synced** records successful sync activity rather than the file’s modification date. Browsing compares sizes and dates only, so viewing a folder never makes a cloud app download files. For Google Drive, a completed backup means the files are in Google Drive and their checksums match. For other drives it means the files are in the provider's folder; keep that provider's app running so it can upload them.
+
+Before a backup starts, Drive Folder Sync checks that the Google Drive quota or the target drive has room for it. Copies go to a temporary file first and replace the original only when complete, so an interrupted copy never leaves a partial file. Paths longer than 260 characters are supported. A large first backup is best started from the app rather than left for shutdown, because Windows limits how long shutdown can wait.
 
 **Sync all** backs up or refreshes every attachment. Right-click an attached local or cloud folder and choose **Remove synced folder**. The confirmation shows both paths; removing the attachment stops its automatic backup and refresh and keeps files on both sides. **Stop syncing this folder** in the **…** menu performs the same action. **… → View sync log** shows what each sync did, including errors.
 

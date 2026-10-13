@@ -25,6 +25,44 @@ namespace DriveFolderSync
             }
         }
 
+        // A running sync shows amount, speed and time left in the status bar, even at the minimum size.
+        static void ShowSampleProgress(MainForm form, string output)
+        {
+            SyncProgress sample = new SyncProgress("Push");
+            sample.StartFolder(@"D:\project-documents", 1, 2);
+            sample.Plan(45, 1200L * 1024 * 1024);
+            sample.BeginFile(@"bids\Draft Bid_Tech Bid.docx");
+            sample.Copied(0);
+            Thread.Sleep(1100);
+            sample.Copied(96L * 1024 * 1024);
+            MethodInfo track = typeof(MainForm).GetMethod("TrackProgress", BindingFlags.Instance | BindingFlags.NonPublic);
+            track.Invoke(form, new object[] { sample });
+            try
+            {
+                ToolStripStatusLabel label = (ToolStripStatusLabel)Field(form, "actionLabel");
+                ToolStripProgressBar bar = (ToolStripProgressBar)Field(form, "progress");
+                bar.Visible = true;
+                foreach (Size size in new Size[] { Theme.S(980, 560), Theme.S(1280, 760) })
+                {
+                    form.Size = size;
+                    WaitForLoad(form);
+                    if (!label.Text.Contains("96 MB of 1.2 GB") || !label.Text.Contains("MB/s") || !label.Text.Contains("left") || !label.Text.Contains("file 1 of 45"))
+                        throw new Exception("sync progress text was incomplete: " + label.Text);
+                    if (label.Placement != ToolStripItemPlacement.Main || bar.Placement != ToolStripItemPlacement.Main)
+                        throw new Exception("sync progress did not fit the status bar at " + size.Width + " px");
+                    if (bar.Style != ProgressBarStyle.Continuous || bar.Value != 8) throw new Exception("progress bar did not show the percentage: " + bar.Value);
+                }
+                Capture(form, Path.Combine(output, "sync-progress.png"));
+            }
+            finally
+            {
+                track.Invoke(form, new object[] { null });
+                ((ToolStripProgressBar)Field(form, "progress")).Visible = false;
+                form.Size = Theme.S(980, 560);
+                WaitForLoad(form);
+            }
+        }
+
         static object Field(object target, string name)
         {
             return target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
@@ -173,7 +211,11 @@ namespace DriveFolderSync
                     ComboBox selectedPair = (ComboBox)Field(form, "pairPicker");
                     if (selectedPair.SelectedIndex != 1 || string.IsNullOrEmpty(selectedPair.Text))
                         throw new Exception("folder selector has no selected text: index=" + selectedPair.SelectedIndex);
-                    selectedPair.Refresh();
+                    ViewInfo pairView = (ViewInfo)Field(form, "view");
+                    if (pairView.Badge != "1 file waiting to back up" || pairView.BadgeKind != "local")
+                        throw new Exception("pending upload badge was not displayed: " + pairView.Badge + ", kind=" + pairView.BadgeKind);
+                    if (!pairView.Detail.Contains("Backs up at startup & shutdown"))
+                        throw new Exception("lifecycle status detail was not displayed: " + pairView.Detail);
                     NoSideScroll(form, "at the default size");
                     Capture(form, Path.Combine(output, "folder-pair.png"));
                     Navigate(form, Path.Combine(local, "Notes"));
@@ -190,6 +232,22 @@ namespace DriveFolderSync
                     WaitForLoad(form);
                     NoSideScroll(form, "at the minimum size");
                     Capture(form, Path.Combine(output, "compact.png"));
+                    ShowSampleProgress(form, output);
+                    Provider google = new Provider();
+                    google.Id = "google:work@example.com"; google.Kind = "GoogleDrive"; google.Name = "Google Drive";
+                    google.Root = drive.Root; google.Detail = "work@example.com (G:)";
+                    using (GoogleSignInDialog signIn = new GoogleSignInDialog(new List<Provider> { google, drive }))
+                    {
+                        signIn.StartPosition = FormStartPosition.Manual;
+                        signIn.Location = new Point(-32000, -32000);
+                        signIn.Show(form);
+                        Application.DoEvents();
+                        Capture(signIn, Path.Combine(output, "google-sign-in.png"));
+                        Panel rows = (Panel)Field(signIn, "accounts");
+                        bool listed = false;
+                        foreach (Control row in rows.Controls) if (row.Text.StartsWith("work@example.com")) listed = true;
+                        if (!listed || rows.Controls.Count != 2) throw new Exception("sign-in dialog did not list exactly the Google Drive account");
+                    }
                     using (LinkDialog dialog = new LinkDialog(Store.DetectProviders(), drive, local, @"Backups\new-project"))
                     {
                         dialog.StartPosition = FormStartPosition.Manual;

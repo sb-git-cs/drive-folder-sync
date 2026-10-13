@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.6.0
+
+Google Drive backups now upload directly, and syncs show their progress.
+
+- **Direct Google Drive upload.** Backups to Google Drive upload straight from the attached folder through the Google Drive API, and refreshes download straight back. Previously every file was copied into Google Drive for desktop's drive, which kept a second copy of the whole backup in its cache on drive C. Connect each account once in **… → Google Drive sign-in…** (see the README for the one-time Google Cloud setup). Uploads are resumable, retried after network errors, and checked against Google's checksum.
+- **Progress, speed and time left.** The status bar shows the amount copied out of the total, the speed, the time left and the file count for backups, refreshes and drag-and-drop. The tray icon and the shutdown screen show the same progress for background syncs.
+- **Stop.** A running sync can be stopped after the current file. Progress is saved as it goes, so the next run continues where it stopped.
+- **Space check.** A backup that wouldn't fit in the Google Drive quota or on the target drive doesn't start, and says how much space it needs.
+- **Long paths.** Files with paths longer than 260 characters no longer fail with "Illegal characters in path".
+- **Safer copies.** Files are copied to a temporary file and moved into place when complete, so an interrupted copy never leaves a partial file.
+- **Browsing doesn't download.** File statuses compare sizes and dates instead of reading cloud files, so opening a folder never makes a cloud app download its files. An unsynced pair with the same size and date shows **Same size and date**.
+- **Backup on startup & shutdown reliability.** Backups now run automatically on system power-on / sign-in as well as at shutdown, ensuring local additions or edits are never stranded. If Windows terminates a shutdown backup early, the next startup detects the interruption and catches up immediately. Artificial shutdown delays were removed.
+- **Continuous background backup.** Attached folders sync periodically while the PC is on so changes do not pile up for shutdown.
+- **Sync & power status UI.** Attached folders show how many local files are waiting to back up; new **… → Sync and power backup status…** dialog displays live service health and power-lifecycle status; and **… → Back up to cloud automatically at startup** allows toggling startup uploads.
+- Error summaries from **Sync all** now show the reason for the first folder that failed.
+
 ## 1.5.3
 
 - Automatic updates no longer fail with "Update deferred … The operation has timed out" on networks where one of GitHub's download servers is unreachable. The updater now waits long enough for Windows to try the next server. Copies older than 1.5.3 may need this version installed manually once.

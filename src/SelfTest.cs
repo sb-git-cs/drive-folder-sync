@@ -254,6 +254,24 @@ namespace DriveFolderSync
                 if (File.ReadAllText(Path.Combine(dropLocal, "b", "skip.txt")) != "skip") throw new Exception("dropped folder did not keep its files");
                 if (dropFiles.Count < 2) throw new Exception("dropped folder did not record its files");
 
+                string progressLocal = Path.Combine(root, "progress-local");
+                string progressCloud = Path.Combine(root, "progress-cloud");
+                Directory.CreateDirectory(Path.Combine(progressLocal, "sub"));
+                File.WriteAllBytes(Path.Combine(progressLocal, "large.bin"), new byte[3 * 1024 * 1024 + 17]);
+                File.WriteAllText(Path.Combine(progressLocal, "sub", "small.txt"), "small");
+                string progressState = Path.Combine(root, "progress-state.json");
+                SyncProgress measured = new SyncProgress("Push");
+                SyncEngine.SyncFolder("Push", progressLocal, progressCloud, progressState, true, null, measured);
+                long expected = 3 * 1024 * 1024 + 17 + 5;
+                if (measured.TotalFiles != 2 || measured.DoneFiles != 2 || measured.TotalBytes != expected || measured.DoneBytes != expected || measured.Percent != 100)
+                    throw new Exception("sync progress did not add up: " + measured.DoneFiles + "/" + measured.TotalFiles + " files, " + measured.DoneBytes + "/" + measured.TotalBytes + " bytes");
+                if (new FileInfo(Path.Combine(progressCloud, "large.bin")).Length != 3 * 1024 * 1024 + 17) throw new Exception("progress copy changed the file size");
+                SyncProgress idle = new SyncProgress("Push");
+                SyncEngine.SyncFolder("Push", progressLocal, progressCloud, progressState, true, null, idle);
+                if (idle.TotalFiles != 0 || idle.Percent != 100) throw new Exception("an up-to-date folder reported work to copy");
+                if (SyncProgress.TimeLeft(30) != "about 30 s left" || SyncProgress.TimeLeft(150) != "about 3 min left" || SyncProgress.TimeLeft(4000) != "about 1 h 7 min left")
+                    throw new Exception("time left was formatted incorrectly");
+
                 string providerRoot = Path.Combine(root, "provider");
                 Directory.CreateDirectory(providerRoot);
                 Provider attachedProvider = new Provider();
@@ -317,12 +335,13 @@ namespace DriveFolderSync
                     throw new Exception("initial same-size conflict lost a file version");
                 FileRecord first = new FileRecord(); first.Full = initialL; first.Length = 4; first.MtimeUtc = stamp;
                 FileRecord second = new FileRecord(); second.Full = initialR; second.Length = 4; second.MtimeUtc = stamp;
-                if (SyncEngine.Classify(first, second, null).Kind == "same") throw new Exception("same-size differing contents were marked synced");
+                Dictionary<string, Snap> attachedState = Store.ReadState(Store.StatePath(existingAttachment.Id));
+                if (!attachedState.ContainsKey("same-size.txt") || SyncEngine.Classify(first, second, attachedState["same-size.txt"]).Text != "Needs review")
+                    throw new Exception("same-size differing contents were marked synced");
                 using (FileStream locked = new FileStream(initialR, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
                 {
-                    rejected = false;
-                    try { SyncEngine.Classify(first, second, null); } catch (IOException) { rejected = true; }
-                    if (!rejected) throw new Exception("an unreadable comparison was reported as matching");
+                    // Browsing must never open a cloud file: reading one makes the cloud app download it.
+                    if (SyncEngine.Classify(first, second, null).Text != "Same size and date") throw new Exception("browsing compared file contents");
                 }
                 File.WriteAllText(initialR, "aaaa");
                 if (SyncEngine.Classify(first, second, null).LastSynced != "") throw new Exception("a modification timestamp was reported as the sync time");
@@ -430,6 +449,21 @@ namespace DriveFolderSync
                     if (!rejected || !File.Exists(initialL)) throw new Exception("failed directory scan did not stop sync safely");
                 }
                 finally { Directory.SetAccessControl(deniedFolder, originalAcl); }
+
+                if (!Store.BackupOnStartupEnabled) throw new Exception("startup backup was not enabled by default");
+                Store.SetBackupOnStartup(false);
+                if (Store.BackupOnStartupEnabled) throw new Exception("startup backup disable setting was not saved");
+                Store.SetBackupOnStartup(true);
+                if (!Store.BackupOnStartupEnabled) throw new Exception("startup backup enable setting was not restored");
+
+                Store.RecordShutdownStart();
+                if (!Store.WasLastShutdownInterrupted()) throw new Exception("incomplete shutdown was not detected as interrupted");
+                Store.RecordShutdownComplete();
+                if (Store.WasLastShutdownInterrupted()) throw new Exception("completed shutdown was detected as interrupted");
+                Store.ClearShutdownMarker();
+                if (Store.WasLastShutdownInterrupted()) throw new Exception("cleared shutdown marker was detected as interrupted");
+
+                GoogleSelfTest.Run(Path.Combine(root, "google"));
 
                 File.WriteAllText(resultPath, "self-test passed");
                 return 0;
