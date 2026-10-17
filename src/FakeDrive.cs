@@ -133,11 +133,15 @@ namespace DriveFolderSync
                 try { client = listener.AcceptTcpClient(); }
                 catch (SocketException) { return; }
                 catch (ObjectDisposedException) { return; }
-                using (client)
+                ThreadPool.QueueUserWorkItem(delegate
                 {
-                    try { Handle(client.GetStream()); }
-                    catch (IOException) { }
-                }
+                    using (client)
+                    {
+                        try { Handle(client.GetStream()); }
+                        catch (IOException) { }
+                        catch (SocketException) { }
+                    }
+                });
             }
         }
 
@@ -236,6 +240,13 @@ namespace DriveFolderSync
                 if (!Items.TryGetValue(path.Substring("/drive/v3/files/".Length), out item)) return Error(404, "File not found", ref status);
                 return item.Data;
             }
+            if (method == "DELETE" && path.StartsWith("/drive/v3/files/", StringComparison.Ordinal))
+            {
+                string id = path.Substring("/drive/v3/files/".Length);
+                Items.Remove(id);
+                status = 204;
+                return new byte[0];
+            }
             if ((method == "POST" || method == "PATCH") && path.StartsWith("/upload/drive/v3/files", StringComparison.Ordinal))
             {
                 string fileId = path.Length > "/upload/drive/v3/files/".Length ? path.Substring("/upload/drive/v3/files/".Length) : null;
@@ -300,7 +311,7 @@ namespace DriveFolderSync
             string text = Encoding.GetEncoding(28591).GetString(body);
             int metaStart = text.IndexOf("\r\n\r\n", StringComparison.Ordinal) + 4;
             int metaEnd = text.IndexOf("\r\n" + boundary, metaStart, StringComparison.Ordinal);
-            string meta = Encoding.UTF8.GetString(body, metaStart, metaEnd - metaStart);
+            string meta = metaEnd > metaStart ? Encoding.UTF8.GetString(body, metaStart, metaEnd - metaStart) : "";
             int dataStart = text.IndexOf("\r\n\r\n", metaEnd, StringComparison.Ordinal) + 4;
             int dataEnd = text.LastIndexOf("\r\n" + boundary + "--", StringComparison.Ordinal);
             byte[] data = new byte[dataEnd - dataStart];
@@ -499,6 +510,200 @@ namespace DriveFolderSync
             SyncEngine.TransferThroughRemote(new GoogleRemote(client, "test@example.com", @"Backups\project"), local, true, items, movedDirs, movedFiles, null);
             Check(File.ReadAllText(Path.Combine(local, "restored", "inner", "x.txt")) == "dropped", "a folder dropped on the local pane was not downloaded");
             Check(refreshes == 0, "the access token was refreshed without a 401");
+
+            long quotaUsed, quotaLimit;
+            bool gotQuota = client.GetQuotaInfo(out quotaUsed, out quotaLimit);
+            Check(gotQuota && quotaUsed >= 0, "direct quota info failed");
+
+            string directUploadDir = Path.Combine(root, "direct-upload");
+            Directory.CreateDirectory(Path.Combine(directUploadDir, "subfolder"));
+            File.WriteAllText(Path.Combine(directUploadDir, "hello.txt"), "direct hello");
+            File.WriteAllText(Path.Combine(directUploadDir, "subfolder", "world.txt"), "direct world");
+
+            string directTargetFolderId = client.ResolvePathFolderId(client.RootId(), @"DirectUploadRoot\SubTarget", true);
+            Check(!string.IsNullOrEmpty(directTargetFolderId), "direct folder resolution failed");
+
+            int uploadedCount = client.UploadDirectoryDirect(directUploadDir, directTargetFolderId, null);
+            Check(uploadedCount == 2, "expected 2 files uploaded directly, got " + uploadedCount);
+
+            string directDownloadDir = Path.Combine(root, "direct-download");
+            int downloadedCount = client.DownloadDirectoryDirect(directTargetFolderId, directDownloadDir, null);
+            Check(downloadedCount == 2, "expected 2 files downloaded directly, got " + downloadedCount);
+            Check(File.ReadAllText(Path.Combine(directDownloadDir, "direct-upload", "hello.txt")) == "direct hello", "direct download content mismatch");
+            Check(File.ReadAllText(Path.Combine(directDownloadDir, "direct-upload", "subfolder", "world.txt")) == "direct world", "direct download subfolder content mismatch");
+
+            client.DeleteFile(directTargetFolderId);
+            Check(!drive.Items.ContainsKey(directTargetFolderId), "direct delete failed to remove folder");
+
+            // Test 1: Upload a single file directly to Google Drive via API (client.Upload)
+            string singleUploadFile = Path.Combine(root, "test-upload-file.txt");
+            string testContent = "Testing upload of a single file to Google Drive directly via API.";
+            File.WriteAllText(singleUploadFile, testContent);
+            FileRecord uploadedRecord = client.Upload(singleUploadFile, "test-upload-file.txt", client.RootId(), null, File.GetLastWriteTimeUtc(singleUploadFile), null);
+            Check(uploadedRecord != null && !string.IsNullOrEmpty(uploadedRecord.Id), "client.Upload returned invalid file record");
+            FakeDrive.Item driveItem = drive.Find("test-upload-file.txt");
+            Check(driveItem != null, "uploaded file was not found in Google Drive");
+            Check(Encoding.UTF8.GetString(driveItem.Data) == testContent, "uploaded file data mismatch in Google Drive");
+            Check(driveItem.Id == uploadedRecord.Id, "uploaded file id mismatch");
+            FileRecord foundRec = client.FindFile(client.RootId(), "test-upload-file.txt");
+            Check(foundRec != null && foundRec.Id == uploadedRecord.Id, "client.FindFile did not find uploaded file");
+
+            // Test 2: In-place update / replace of the uploaded file
+            string updatedContent = "Updated content for uploaded Google Drive file.";
+            File.WriteAllText(singleUploadFile, updatedContent);
+            FileRecord replacedRecord = client.Upload(singleUploadFile, "test-upload-file.txt", client.RootId(), uploadedRecord.Id, File.GetLastWriteTimeUtc(singleUploadFile), null);
+            Check(replacedRecord != null && replacedRecord.Id == uploadedRecord.Id, "client.Upload update did not preserve file id");
+            driveItem = drive.Find("test-upload-file.txt");
+            Check(Encoding.UTF8.GetString(driveItem.Data) == updatedContent, "updated file content mismatch in Google Drive");
+
+            // Test 3: Download the uploaded file back from Google Drive
+            string downloadedFile = Path.Combine(root, "test-download-file.txt");
+            client.Download(replacedRecord, downloadedFile, null);
+            Check(File.Exists(downloadedFile), "downloaded file does not exist locally");
+            Check(File.ReadAllText(downloadedFile) == updatedContent, "downloaded file content does not match uploaded content");
+
+            // Test 4: Delete the uploaded file from Google Drive
+            client.DeleteFile(uploadedRecord.Id);
+            Check(drive.Find("test-upload-file.txt") == null, "deleted file remained in Google Drive");
+
+            // Test 5: Single file upload through SyncEngine.TransferThroughRemote
+            string singleDropFile = Path.Combine(root, "single-drop.txt");
+            File.WriteAllText(singleDropFile, "dropped single file content");
+            items.Clear();
+            items.Add(new KeyValuePair<string, string>(singleDropFile, "single-drop.txt"));
+            SyncEngine.TransferThroughRemote(new GoogleRemote(client, "test@example.com", @"Backups\project"), local, false, items, movedDirs, movedFiles, null);
+            FakeDrive.Item singleDropUploaded = drive.Find(@"Backups\project\single-drop.txt");
+            Check(singleDropUploaded != null && Encoding.UTF8.GetString(singleDropUploaded.Data) == "dropped single file content", "a single file dropped on the cloud pane was not uploaded");
+
+            // Test 6: Upload through GoogleAuth.Client
+            string origApi = GoogleAuth.ApiBase;
+            GoogleAuth.ApiBase = drive.BaseUrl;
+            GoogleAuth.SetTestToken("auth-test@example.com", "fake-token");
+            try
+            {
+                GoogleDriveClient authClient = GoogleAuth.Client("auth-test@example.com");
+                string authUploadFile = Path.Combine(root, "auth-upload.txt");
+                File.WriteAllText(authUploadFile, "auth client uploaded file");
+                FileRecord authRec = authClient.Upload(authUploadFile, "auth-upload.txt", client.RootId(), null, File.GetLastWriteTimeUtc(authUploadFile), null);
+                Check(authRec != null, "GoogleAuth.Client upload returned null");
+                FakeDrive.Item authItem = drive.Find("auth-upload.txt");
+                Check(authItem != null && Encoding.UTF8.GetString(authItem.Data) == "auth client uploaded file", "GoogleAuth.Client upload content mismatch");
+                authClient.DeleteFile(authRec.Id);
+            }
+            finally
+            {
+                GoogleAuth.ApiBase = origApi;
+                GoogleAuth.SetTestToken("auth-test@example.com", null);
+            }
+
+            // Test Google sign-in listener cancellation
+            TcpListener testListener = new TcpListener(IPAddress.Loopback, 0);
+            testListener.Start();
+            bool canceledThrown = false;
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Thread.Sleep(50);
+                GoogleAuth.CancelSignIn();
+            });
+            try
+            {
+                GoogleAuth.WaitForRedirectForTest(testListener, DateTime.UtcNow.AddSeconds(10));
+            }
+            catch (OperationCanceledException)
+            {
+                canceledThrown = true;
+            }
+            finally
+            {
+                try { testListener.Stop(); } catch { }
+            }
+            sw.Stop();
+            Check(canceledThrown, "Google sign-in cancellation did not throw OperationCanceledException");
+            Check(sw.ElapsedMilliseconds < 2000, "Google sign-in cancellation took too long: " + sw.ElapsedMilliseconds + "ms");
+            GoogleAuth.CancelSignIn();
+
+            // Test 7: SyncProgress elapsed time and ETA formatting
+            Check(SyncProgress.FormatElapsed(TimeSpan.FromSeconds(0)) == "0:00", "0s elapsed format mismatch");
+            Check(SyncProgress.FormatElapsed(TimeSpan.FromSeconds(5)) == "0:05", "5s elapsed format mismatch");
+            Check(SyncProgress.FormatElapsed(TimeSpan.FromSeconds(75)) == "1:15", "75s elapsed format mismatch");
+            Check(SyncProgress.FormatElapsed(TimeSpan.FromSeconds(3665)) == "1:01:05", "3665s elapsed format mismatch");
+
+            SyncProgress testProg = new SyncProgress("Push");
+            testProg.StartFolder(@"D:\test-folder", 1, 1);
+            string initialDesc = testProg.Describe();
+            Check(initialDesc.Contains("Checking test-folder") && initialDesc.Contains("elapsed"), "initial check describe missing check title or elapsed");
+
+            testProg.SetCheckStatus("Scanning Google Drive…");
+            string scanDesc = testProg.Describe();
+            Check(scanDesc.Contains("Checking test-folder (Scanning Google Drive…)") && scanDesc.Contains("elapsed"), "scan describe missing status or elapsed");
+
+            testProg.SetCheckStatus("Preparing cloud folders (3 of 10)", 15);
+            string prepDesc = testProg.Describe();
+            Check(prepDesc.Contains("Preparing cloud folders (3 of 10)") && prepDesc.Contains("ETA") && prepDesc.Contains("left") && prepDesc.Contains("elapsed"), "prep describe missing ETA or elapsed: " + prepDesc);
+            string prepBrief = testProg.Brief();
+            Check(prepBrief.Contains("ETA") && prepBrief.Contains("left"), "prep brief missing ETA or left: " + prepBrief);
+
+            testProg.Plan(10, 100L * 1024 * 1024);
+            testProg.BeginFile("data.bin");
+            testProg.Copied(10L * 1024 * 1024);
+            Thread.Sleep(1100);
+            testProg.Copied(30L * 1024 * 1024);
+            string plannedDesc = testProg.Describe();
+            Check(plannedDesc.Contains("30 MB of 100 MB") && plannedDesc.Contains("MB/s") && plannedDesc.Contains("ETA") && plannedDesc.Contains("left") && plannedDesc.Contains("elapsed") && plannedDesc.Contains("file 1 of 10"), "planned describe missing fields: " + plannedDesc);
+            string plannedBrief = testProg.Brief();
+            Check(plannedBrief.Contains("30%") && plannedBrief.Contains("left"), "planned brief missing percent or left: " + plannedBrief);
+
+            // Test 8: EnsureDirectories optimization and progress reporting
+            GoogleRemote optRemote = new GoogleRemote(client, "test@example.com", @"Backups\opt-test");
+            optRemote.Prepare(true);
+            optRemote.List(null);
+            SyncProgress ensureProg = new SyncProgress("Push");
+            ensureProg.StartFolder(@"D:\opt-test", 1, 1);
+            List<string> missingDirs = new List<string> { @"sub1", @"sub1\nested1", @"sub2" };
+            optRemote.EnsureDirectories(missingDirs, ensureProg);
+            Check(drive.Find(@"Backups\opt-test\sub1\nested1") != null, "nested cloud directory was not created");
+            Check(ensureProg.CheckStatus.Contains("Preparing cloud folders"), "EnsureDirectories did not update progress status: " + ensureProg.CheckStatus);
+
+            // Re-running EnsureDirectories should find all directories already cached and not re-create them
+            int countBefore = drive.Items.Count;
+            optRemote.EnsureDirectories(missingDirs, null);
+            Check(drive.Items.Count == countBefore, "EnsureDirectories re-created already existing directories");
+
+            // Test 9: Concurrent multi-file upload and download via SyncFolder
+            string concurrentLocal = Path.Combine(root, "concurrent-local");
+            Directory.CreateDirectory(concurrentLocal);
+            for (int i = 0; i < 8; i++)
+            {
+                File.WriteAllText(Path.Combine(concurrentLocal, "file" + i + ".txt"), "Content of concurrent file " + i);
+            }
+            GoogleRemote concRemote = new GoogleRemote(client, "test@example.com", @"Backups\concurrent-test");
+            string concState = Path.Combine(root, "conc-state.json");
+            SyncProgress concProg = new SyncProgress("Push");
+            concProg.StartFolder(concurrentLocal, 1, 1);
+            SyncStats pushStats = SyncEngine.SyncFolder("Push", concurrentLocal, concRemote, concState, true, null, concProg);
+            Check(pushStats.Up == 8, "concurrent push did not upload all 8 files, uploaded: " + pushStats.Up);
+            Check(pushStats.Errors == 0, "concurrent push reported errors: " + pushStats.Errors);
+            for (int i = 0; i < 8; i++)
+            {
+                FakeDrive.Item item = drive.Find(@"Backups\concurrent-test\file" + i + ".txt");
+                Check(item != null && Encoding.UTF8.GetString(item.Data) == "Content of concurrent file " + i, "concurrent cloud file " + i + " mismatch");
+            }
+
+            // Test concurrent pull to a fresh local directory
+            string concDownloadLocal = Path.Combine(root, "concurrent-download");
+            string concPullState = Path.Combine(root, "conc-pull-state.json");
+            SyncProgress pullProg = new SyncProgress("Pull");
+            pullProg.StartFolder(concDownloadLocal, 1, 1);
+            SyncStats pullStats = SyncEngine.SyncFolder("Pull", concDownloadLocal, concRemote, concPullState, true, null, pullProg);
+            Check(pullStats.Down == 8, "concurrent pull did not download all 8 files, downloaded: " + pullStats.Down);
+            Check(pullStats.Errors == 0, "concurrent pull reported errors: " + pullStats.Errors);
+            for (int i = 0; i < 8; i++)
+            {
+                string localPath = Path.Combine(concDownloadLocal, "file" + i + ".txt");
+                Check(File.Exists(localPath), "concurrent downloaded file " + i + " missing on disk");
+                Check(File.ReadAllText(localPath) == "Content of concurrent file " + i, "concurrent downloaded file " + i + " content mismatch");
+            }
         }
     }
 }

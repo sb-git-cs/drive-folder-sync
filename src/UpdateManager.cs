@@ -25,7 +25,7 @@ namespace DriveFolderSync
 
         public static void SetAutomatic(bool enabled)
         {
-            using (SyncEngine.LockState(120))
+            lock (Store.ConfigGate)
             {
                 Dictionary<string, object> config = Store.ReadConfig();
                 config["autoUpdate"] = enabled;

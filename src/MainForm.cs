@@ -189,6 +189,30 @@ namespace DriveFolderSync
         IconButton upButton;
         ToolStripButton refreshButton;
         ToolStripButton uploadButton;
+        ToolStripButton syncedBrowsingButton;
+        bool syncedBrowsing = Store.SyncedBrowsingEnabled;
+
+        bool updatingSyncedBrowsing;
+        void SetSyncedBrowsingState(bool enabled)
+        {
+            if (updatingSyncedBrowsing) return;
+            updatingSyncedBrowsing = true;
+            try
+            {
+                syncedBrowsing = enabled;
+                Store.SetSyncedBrowsing(enabled);
+                if (syncedBrowsingButton != null && syncedBrowsingButton.Checked != enabled)
+                    syncedBrowsingButton.Checked = enabled;
+                if (syncedBrowsingCheck != null && syncedBrowsingCheck.Checked != enabled)
+                    syncedBrowsingCheck.Checked = enabled;
+                ShowAction(enabled ? "Synced browsing enabled" : "Independent browsing enabled", "info");
+            }
+            finally
+            {
+                updatingSyncedBrowsing = false;
+            }
+        }
+        int lastActiveSide = 2;
         ToolStripButton replicaButton;
         ToolStripButton linkButton;
         ToolStripDropDownButton syncAllButton;
@@ -280,7 +304,17 @@ namespace DriveFolderSync
                 Hide();
                 return;
             }
+            GoogleAuth.CancelSignIn();
             SaveWindow();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                GoogleAuth.CancelSignIn();
+            }
+            base.Dispose(disposing);
         }
 
         // Reopening the window while it waits to close keeps it open.
@@ -374,8 +408,23 @@ namespace DriveFolderSync
             more.DropDownItems.Add(MenuItem("About Drive Folder Sync", Glyphs.Info, new EventHandler(About_Click)));
             more.DropDownOpening += new EventHandler(delegate { stopItem.Enabled = CurrentLink() != null; });
 
+            syncedBrowsingButton = new ToolStripButton("Synced browsing");
+            syncedBrowsingButton.CheckOnClick = true;
+            syncedBrowsingButton.Checked = Store.SyncedBrowsingEnabled;
+            Style(syncedBrowsingButton, Glyphs.Sync, "Synced browsing: when checked, navigating one pane opens the matching folder in the other. When unchecked, both panes navigate independently.");
+            syncedBrowsingButton.CheckedChanged += delegate
+            {
+                if (syncedBrowsingButton.Checked != syncedBrowsing)
+                {
+                    SetSyncedBrowsingState(syncedBrowsingButton.Checked);
+                }
+            };
+            ToolStripButton googleBtn = Command("Google Drive…", Glyphs.Cloud, "Sign in to Google Drive directly via API or switch accounts", delegate { ShowGoogleSignIn(); });
+
             commands.Items.Add(refreshButton);
             commands.Items.Add(uploadButton);
+            commands.Items.Add(syncedBrowsingButton);
+            commands.Items.Add(googleBtn);
             commands.Items.Add(Separator());
             commands.Items.Add(replicaButton);
             commands.Items.Add(linkButton);
@@ -442,7 +491,7 @@ namespace DriveFolderSync
                 nav.Controls.Add(button);
             }
             address.BackColor = Theme.Chrome;
-            address.Navigate += new Action<string>(delegate(string key) { Navigate(key, true); });
+            address.Navigate += new Action<string>(delegate(string key) { if (syncedBrowsing) Navigate(key, true); else NavigateCloud(key); });
             address.Submit += new Action<string>(GoTo);
             address.EditEnded += new EventHandler(delegate { list.Focus(); });
             search.BackColor = Theme.Chrome;
@@ -517,12 +566,12 @@ namespace DriveFolderSync
             ConfigureList(localList, localEmpty);
             listMenu.Opening += new CancelEventHandler(ListMenu_Opening);
 
-            Panel cloudPane = MakePane(driveCaption, "Drive", split, tree, list);
-            cloudPane.Controls.Add(BuildCloudToolbar());
-            sides.Panel1.Controls.Add(cloudPane);
             Panel localPane = MakePane(localCaption, "Local folders", localSplit, localTree, localList);
             localPane.Controls.Add(BuildPairToolbar());
-            sides.Panel2.Controls.Add(localPane);
+            sides.Panel1.Controls.Add(localPane);
+            Panel cloudPane = MakePane(driveCaption, "Drive", split, tree, list);
+            cloudPane.Controls.Add(BuildCloudToolbar());
+            sides.Panel2.Controls.Add(cloudPane);
             WireTreeDrop(tree, false);
             WireTreeDrop(localTree, true);
         }
@@ -572,6 +621,7 @@ namespace DriveFolderSync
             view.Indent = Theme.S(16);
             view.BeforeExpand += new TreeViewCancelEventHandler(Tree_BeforeExpand);
             view.AfterSelect += new TreeViewEventHandler(Tree_AfterSelect);
+            view.Enter += delegate { lastActiveSide = (view == localTree ? 1 : 2); };
             view.NodeMouseClick += new TreeNodeMouseClickEventHandler(delegate(object sender, TreeNodeMouseClickEventArgs e)
             {
                 if (e.Button == MouseButtons.Right) view.SelectedNode = e.Node;
@@ -581,6 +631,8 @@ namespace DriveFolderSync
         void ConfigureList(FileList view, EmptyState blank)
         {
             view.Dock = DockStyle.Fill;
+            view.Enter += delegate { lastActiveSide = (view == localList ? 1 : 2); };
+            view.MouseDown += delegate { lastActiveSide = (view == localList ? 1 : 2); };
             view.View = View.Details;
             view.OwnerDraw = true;
             view.MultiSelect = true;
@@ -868,6 +920,23 @@ namespace DriveFolderSync
                 }
                 view.Nodes.Add(rootNode);
                 rootNode.Expand();
+                try
+                {
+                    foreach (DriveInfo drive in DriveInfo.GetDrives())
+                    {
+                        if (!drive.IsReady) continue;
+                        NodeTag dTag = new NodeTag();
+                        dTag.Key = drive.RootDirectory.FullName;
+                        dTag.FullPath = drive.RootDirectory.FullName;
+                        string label = drive.Name.TrimEnd('\\');
+                        try { if (!string.IsNullOrEmpty(drive.VolumeLabel)) label += " (" + drive.VolumeLabel + ")"; } catch { }
+                        TreeNode dNode = MakeDirNode(label, dTag);
+                        dNode.ImageIndex = ShellImages.Index(drive.RootDirectory.FullName, true);
+                        dNode.SelectedImageIndex = dNode.ImageIndex;
+                        view.Nodes.Add(dNode);
+                    }
+                }
+                catch { }
             }
             else if (!string.IsNullOrEmpty(root) && root != "vfs:linked")
             {
@@ -934,7 +1003,7 @@ namespace DriveFolderSync
             node.Tag = tag;
             node.ImageIndex = ShellImages.Index(tag.FullPath, true);
             node.SelectedImageIndex = node.ImageIndex;
-            if (!string.IsNullOrEmpty(tag.FullPath) && Directory.Exists(tag.FullPath))
+            if (!string.IsNullOrEmpty(tag.FullPath) && (Directory.Exists(tag.FullPath) || tag.FullPath.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase)))
                 node.Nodes.Add(new TreeNode());
             else
                 tag.Loaded = true;
@@ -947,7 +1016,70 @@ namespace DriveFolderSync
             if (tag == null || tag.Loaded) return;
             e.Node.Nodes.Clear();
             tag.Loaded = true;
-            if (string.IsNullOrEmpty(tag.FullPath) || !Directory.Exists(tag.FullPath)) return;
+            if (string.IsNullOrEmpty(tag.FullPath)) return;
+            if (tag.FullPath.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+            {
+                Provider p = null;
+                foreach (Provider cand in providers)
+                {
+                    if (cand != null && !string.IsNullOrEmpty(cand.Root) && tag.FullPath.StartsWith(cand.Root, StringComparison.OrdinalIgnoreCase))
+                    {
+                        p = cand;
+                        break;
+                    }
+                }
+                if (p == null) p = Store.FindProvider(providers, activeProviderId);
+                if (p != null)
+                {
+                    string email = GoogleAuth.EmailOf(p);
+                    if (!string.IsNullOrEmpty(email) && GoogleAuth.IsSignedIn(email))
+                    {
+                        TreeNode targetNode = e.Node;
+                        string fullPath = tag.FullPath;
+                        string providerRoot = p.Root;
+                        TreeNode dummy = new TreeNode("Loading…") { ForeColor = Theme.TextMuted };
+                        targetNode.Nodes.Add(dummy);
+                        ThreadPool.QueueUserWorkItem(delegate
+                        {
+                            List<TreeNode> children = new List<TreeNode>();
+                            try
+                            {
+                                GoogleDriveClient client = GoogleAuth.Client(email);
+                                string rootId = client.RootId();
+                                string rel = Store.Relative(fullPath, providerRoot) ?? "";
+                                string folderId = string.IsNullOrEmpty(rel) ? rootId : client.ResolvePathFolderId(rootId, rel, false);
+                                if (folderId != null)
+                                {
+                                    List<Dictionary<string, object>> items = client.Query(GoogleDriveClient.Quote(folderId) + " in parents and mimeType = " + GoogleDriveClient.Quote(GoogleDriveClient.FolderType) + " and trashed = false");
+                                    foreach (Dictionary<string, object> item in items)
+                                    {
+                                        string name = Store.GetString(item, "name");
+                                        if (SyncEngine.SkipName(name, true)) continue;
+                                        NodeTag child = new NodeTag();
+                                        child.Key = fullPath.TrimEnd('\\') + "\\" + name;
+                                        child.FullPath = child.Key;
+                                        TreeNode childNode = MakeDirNode(name, child);
+                                        children.Add(childNode);
+                                    }
+                                }
+                            }
+                            catch (Exception ex) { Store.Log("cloud tree expand error: " + ex.Message); }
+                            try
+                            {
+                                BeginInvoke(new Action(delegate
+                                {
+                                    targetNode.Nodes.Clear();
+                                    foreach (TreeNode node in children) targetNode.Nodes.Add(node);
+                                    if (targetNode.Nodes.Count > 0) targetNode.Expand();
+                                }));
+                            }
+                            catch (InvalidOperationException) { }
+                        });
+                    }
+                }
+                return;
+            }
+            if (!Directory.Exists(tag.FullPath)) return;
             try
             {
                 DirectoryInfo[] dirs = new DirectoryInfo(tag.FullPath).GetDirectories();
@@ -973,7 +1105,15 @@ namespace DriveFolderSync
             if (suppressTree) return;
             NodeTag tag = e.Node.Tag as NodeTag;
             if (tag == null || string.IsNullOrEmpty(tag.Key) || tag.Key == "vfs:replicas") return;
-            Navigate(tag.Key, true);
+            if (syncedBrowsing)
+            {
+                Navigate(tag.Key, true);
+            }
+            else
+            {
+                if (sender == localTree) NavigateLocal(tag.Key);
+                else NavigateCloud(tag.Key);
+            }
         }
 
         void Navigate(string key, bool remember)
@@ -1128,6 +1268,39 @@ namespace DriveFolderSync
 
         void GoUp()
         {
+            if (!syncedBrowsing)
+            {
+                if (lastActiveSide == 1 || localList.Focused || localTree.Focused)
+                {
+                    if (string.IsNullOrEmpty(localKey) || localKey == "vfs:pc" || localKey == "vfs:replicas") return;
+                    string p = Path.GetDirectoryName(localKey);
+                    if (string.IsNullOrEmpty(p)) NavigateLocal("vfs:replicas");
+                    else NavigateLocal(p);
+                    return;
+                }
+                else
+                {
+                    if (string.IsNullOrEmpty(driveKey) || driveKey == "vfs:pc") return;
+                    if (driveKey.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int lastSlash = driveKey.LastIndexOf('\\');
+                        if (lastSlash < 0 || lastSlash <= driveKey.IndexOf(':'))
+                        {
+                            NavigateCloud("vfs:pc");
+                            return;
+                        }
+                        NavigateCloud(driveKey.Substring(0, lastSlash));
+                        return;
+                    }
+                    else if (Directory.Exists(driveKey))
+                    {
+                        string p = Path.GetDirectoryName(driveKey);
+                        if (!string.IsNullOrEmpty(p)) NavigateCloud(p);
+                        else NavigateCloud("vfs:pc");
+                        return;
+                    }
+                }
+            }
             if (current == "vfs:pc") return;
             if (current == "vfs:linked") { Navigate("vfs:pc", true); return; }
             foreach (Provider provider in providers)
@@ -1138,6 +1311,13 @@ namespace DriveFolderSync
                     Navigate("vfs:pc", true);
                     return;
                 }
+            }
+            if (current.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+            {
+                int lastSlash = current.LastIndexOf('\\');
+                if (lastSlash < 0 || lastSlash <= current.IndexOf(':')) Navigate("vfs:pc", true);
+                else Navigate(current.Substring(0, lastSlash), true);
+                return;
             }
             string parent = Path.GetDirectoryName(current);
             if (string.IsNullOrEmpty(parent)) Navigate("vfs:pc", true);
@@ -1176,7 +1356,7 @@ namespace DriveFolderSync
             int token = ++loadToken;
             string key = current;
             loading = true;
-            countLabel.Text = "Loading\u2026";
+            countLabel.Text = "Checking folders\u2026";
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string error = null;
@@ -1295,6 +1475,41 @@ namespace DriveFolderSync
                 page.DriveCaption = place.Provider.Name + " drive data";
                 page.Info.Title = place.Provider.Name + " drive data";
                 page.Info.Legend = true;
+
+                if (place.Provider.Root.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+                {
+                    string localFolder = link != null ? place.ReplicaPath : (!string.IsNullOrEmpty(localKey) && Directory.Exists(localKey) ? localKey : Store.LocalRoot());
+                    Dictionary<string, Snap> state = link != null ? Store.ReadState(Store.StatePath(link.Id)) : null;
+                    page.Drive = ListGoogleFolder(place.Provider, place.Relative, localFolder, link, state);
+                    if (!string.IsNullOrEmpty(localFolder) && Directory.Exists(localFolder))
+                    {
+                        page.LocalRoot = link != null ? place.LocalRoot : localFolder;
+                        page.LocalKey = localFolder;
+                        page.LocalCaption = "Local folder · " + Path.GetFileName(localFolder.TrimEnd('\\'));
+                        page.Local = ListLocalFolder(localFolder, place.Relative, page.Drive, link, state);
+                    }
+                    else
+                    {
+                        page.LocalCaption = "Local folders · Select or attach a folder";
+                        page.LocalRoot = "vfs:replicas";
+                        page.LocalKey = "vfs:replicas";
+                    }
+                    int pendingLocal = 0;
+                    foreach (Row r in page.Local) if (r.Kind == "local" && !r.IsDir) pendingLocal++;
+                    if (pendingLocal > 0 && place.Provider.IsOnline)
+                    {
+                        page.Info.Badge = Plural(pendingLocal, "file") + " waiting to back up";
+                        page.Info.BadgeKind = "local";
+                    }
+                    else
+                    {
+                        page.Info.Badge = place.Provider.IsOnline ? "Connected" : "Not connected";
+                        page.Info.BadgeKind = place.Provider.IsOnline ? "same" : "warn";
+                    }
+                    page.Info.Detail = "Connected directly to Google Drive via API · Local files on left, uploaded versions on right";
+                    page.Info.Tip = "Google Drive (" + GoogleAuth.EmailOf(place.Provider) + ")\r\nPath: " + place.CloudPath;
+                    return page;
+                }
                 if (link == null)
                 {
                     page.Drive = ListFolder(place.CloudPath, null, "", false, null, null);
@@ -1357,6 +1572,371 @@ namespace DriveFolderSync
             page.DriveCaption = page.Info.Title;
             page.LocalCaption = "Local folders";
             return page;
+        }
+
+        List<Row> ListGoogleFolder(Provider provider, string relative, string localFolder, LinkFolder link, Dictionary<string, Snap> state)
+        {
+            List<Row> built = new List<Row>();
+            string email = GoogleAuth.EmailOf(provider);
+            if (string.IsNullOrEmpty(email) || !GoogleAuth.IsSignedIn(email))
+            {
+                Row row = new Row();
+                row.Name = "Sign in to Google Drive to view cloud files";
+                row.Status = "Not signed in";
+                row.Kind = "warn";
+                built.Add(row);
+                return built;
+            }
+            try
+            {
+                GoogleDriveClient client = GoogleAuth.Client(email);
+                string rootId = client.RootId();
+                string folderId = string.IsNullOrEmpty(relative) ? rootId : client.ResolvePathFolderId(rootId, relative, false);
+                if (folderId == null) return built;
+                List<Dictionary<string, object>> items = client.Query(GoogleDriveClient.Quote(folderId) + " in parents and trashed = false");
+                foreach (Dictionary<string, object> item in items)
+                {
+                    string name = Store.GetString(item, "name");
+                    string mime = Store.GetString(item, "mimeType");
+                    bool isDir = mime == GoogleDriveClient.FolderType;
+                    if (SyncEngine.SkipName(name, isDir)) continue;
+                    if (!isDir && mime.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal)) continue;
+
+                    Row row = new Row();
+                    row.Name = name;
+                    row.IsDir = isDir;
+                    string cloudPath = provider.Root.TrimEnd('\\') + (string.IsNullOrEmpty(relative) ? "\\" + name : "\\" + relative.Trim('\\') + "\\" + name);
+                    row.FullPath = cloudPath;
+                    row.NavigateKey = isDir ? cloudPath : null;
+
+                    if (!isDir)
+                    {
+                        long.TryParse(Store.GetString(item, "size"), NumberStyles.Integer, CultureInfo.InvariantCulture, out row.Bytes);
+                        row.Size = SyncEngine.FormatSize(row.Bytes);
+                        DateTime mtime = GoogleDriveClient.ParseTime(Store.GetString(item, "modifiedTime"));
+                        row.ModifiedAt = mtime.ToLocalTime();
+                        row.Modified = row.ModifiedAt.ToString("g");
+                    }
+
+                    string localItem = string.IsNullOrEmpty(localFolder) ? null : Path.Combine(localFolder, name);
+                    bool localExists = !string.IsNullOrEmpty(localItem) && (isDir ? Directory.Exists(localItem) : File.Exists(localItem));
+
+                    if (isDir)
+                    {
+                        row.Status = localExists ? "Synced" : "Only in cloud";
+                        row.Kind = localExists ? "same" : "cloud";
+                        if (link != null && localExists) SetSynced(row, link.LastSync);
+                    }
+                    else if (localExists)
+                    {
+                        FileInfo localFi = new FileInfo(localItem);
+                        if (link != null && state != null)
+                        {
+                            string rel = string.IsNullOrEmpty(relative) ? name : relative.Trim('\\') + "\\" + name;
+                            FileRecord remoteRec = GoogleDriveClient.Record(item);
+                            remoteRec.Rel = rel;
+                            FileRecord localRec = ToRecord(localFi, rel);
+                            Snap snap = state.ContainsKey(rel) ? state[rel] : null;
+                            SyncEngine.RowStatus classified = SyncEngine.Classify(localRec, remoteRec, snap);
+                            row.Kind = classified.Kind;
+                            row.Status = classified.Text;
+                            SetSynced(row, classified.LastSynced);
+                        }
+                        else
+                        {
+                            if (localFi.Length != row.Bytes)
+                            {
+                                if (localFi.LastWriteTimeUtc > row.ModifiedAt.ToUniversalTime())
+                                {
+                                    row.Status = "Local copy newer";
+                                    row.Kind = "local";
+                                }
+                                else
+                                {
+                                    row.Status = "Cloud copy newer";
+                                    row.Kind = "cloud";
+                                }
+                            }
+                            else
+                            {
+                                row.Status = "Synced";
+                                row.Kind = "same";
+                            }
+                        }
+                    }
+                    else
+                    {
+                        row.Status = "Only in cloud";
+                        row.Kind = "cloud";
+                    }
+                    built.Add(row);
+                }
+            }
+            catch (Exception ex)
+            {
+                Store.Log("ListGoogleFolder error: " + ex.Message);
+            }
+            built.Sort(delegate(Row a, Row b)
+            {
+                if (a.IsDir != b.IsDir) return a.IsDir ? -1 : 1;
+                return NaturalCompare(a.Name, b.Name);
+            });
+            return built;
+        }
+
+        List<Row> ListLocalFolder(string localFolder, string cloudRel, List<Row> cloudRows, LinkFolder link, Dictionary<string, Snap> state)
+        {
+            List<Row> built = new List<Row>();
+            if (string.IsNullOrEmpty(localFolder) || !Directory.Exists(localFolder)) return built;
+            FileSystemInfo[] children;
+            try { children = new DirectoryInfo(localFolder).GetFileSystemInfos(); }
+            catch { return built; }
+
+            foreach (FileSystemInfo child in children)
+            {
+                bool isDir = (child.Attributes & FileAttributes.Directory) != 0;
+                if (SyncEngine.SkipName(child.Name, isDir) || SyncEngine.IsRedirect(child.FullName, child.Attributes)) continue;
+
+                Row row = new Row();
+                row.Name = child.Name;
+                row.IsDir = isDir;
+                row.FullPath = child.FullName;
+                row.NavigateKey = isDir ? child.FullName : null;
+                SetFile(row, child, isDir);
+
+                Row cloudMatch = null;
+                if (cloudRows != null)
+                {
+                    foreach (Row cr in cloudRows)
+                    {
+                        if (string.Equals(cr.Name, child.Name, StringComparison.OrdinalIgnoreCase)) { cloudMatch = cr; break; }
+                    }
+                }
+
+                if (cloudMatch != null)
+                {
+                    if (isDir)
+                    {
+                        row.Status = "Synced";
+                        row.Kind = "same";
+                        if (link != null) SetSynced(row, link.LastSync);
+                    }
+                    else if (link != null && state != null)
+                    {
+                        row.Kind = cloudMatch.Kind;
+                        row.Status = cloudMatch.Status;
+                        row.LastSynced = cloudMatch.LastSynced;
+                        row.SyncedAt = cloudMatch.SyncedAt;
+                    }
+                    else
+                    {
+                        FileInfo localFi = (FileInfo)child;
+                        if (localFi.Length != cloudMatch.Bytes)
+                        {
+                            if (localFi.LastWriteTimeUtc > cloudMatch.ModifiedAt.ToUniversalTime())
+                            {
+                                row.Status = "Waiting to back up";
+                                row.Kind = "local";
+                            }
+                            else
+                            {
+                                row.Status = "Cloud copy newer";
+                                row.Kind = "cloud";
+                            }
+                        }
+                        else
+                        {
+                            row.Status = "Synced";
+                            row.Kind = "same";
+                        }
+                    }
+                }
+                else
+                {
+                    row.Status = "Only on this PC";
+                    row.Kind = "local";
+                }
+                built.Add(row);
+            }
+            built.Sort(delegate(Row a, Row b)
+            {
+                if (a.IsDir != b.IsDir) return a.IsDir ? -1 : 1;
+                return NaturalCompare(a.Name, b.Name);
+            });
+            return built;
+        }
+
+        int localNavToken;
+        void NavigateLocal(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            localKey = path;
+            string folderName = Path.GetFileName(path.TrimEnd('\\'));
+            if (string.IsNullOrEmpty(folderName)) folderName = path;
+            localCaption.Text = "Local folder · " + (string.Equals(path, "vfs:replicas", StringComparison.OrdinalIgnoreCase) ? "Attached folders" : folderName);
+            suppressTree = true;
+            try
+            {
+                Reveal(localTree, paneLocalRoot, path);
+            }
+            finally { suppressTree = false; }
+
+            if (string.Equals(path, "vfs:replicas", StringComparison.OrdinalIgnoreCase))
+            {
+                localRows.Clear();
+                foreach (LinkFolder folder in Store.ReadLinks())
+                {
+                    Row attached = new Row();
+                    attached.Name = new DirectoryInfo(folder.Local).Name;
+                    attached.Detail = folder.Local;
+                    attached.Status = Directory.Exists(folder.Local) ? "Attached" : "Not available";
+                    attached.Kind = Directory.Exists(folder.Local) ? "none" : "warn";
+                    attached.FullPath = folder.Local;
+                    attached.NavigateKey = folder.Local;
+                    attached.IsDir = true;
+                    localRows.Add(attached);
+                }
+                if (userSorted || !view.Virtual) SortRows();
+                ShowRows();
+                return;
+            }
+
+            int token = ++localNavToken;
+            loading = true;
+            localCaption.Text = "Local folder · " + (string.Equals(path, "vfs:replicas", StringComparison.OrdinalIgnoreCase) ? "Attached folders" : folderName) + " (checking…)";
+            countLabel.Text = "Checking local files…";
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                List<Row> fetched = new List<Row>();
+                try
+                {
+                    if (!string.IsNullOrEmpty(driveKey) && driveKey.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Provider p = null;
+                        foreach (Provider cand in providers)
+                        {
+                            if (cand != null && !string.IsNullOrEmpty(cand.Root) && driveKey.StartsWith(cand.Root, StringComparison.OrdinalIgnoreCase))
+                            {
+                                p = cand;
+                                break;
+                            }
+                        }
+                        if (p == null) p = Store.FindProvider(providers, activeProviderId);
+                        string rel = p != null ? Store.Relative(driveKey, p.Root) : "";
+                        fetched.AddRange(ListLocalFolder(path, rel, rows, CurrentLink(), null));
+                    }
+                    else
+                    {
+                        fetched.AddRange(ListFolder(path, driveKey, "", true, CurrentLink(), null));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Store.Log("NavigateLocal error: " + ex.Message);
+                }
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (token != localNavToken) return;
+                        loading = false;
+                        localCaption.Text = "Local folder · " + (string.Equals(path, "vfs:replicas", StringComparison.OrdinalIgnoreCase) ? "Attached folders" : folderName);
+                        localRows.Clear();
+                        localRows.AddRange(fetched);
+                        if (userSorted || !view.Virtual) SortRows();
+                        ShowRows();
+                    }));
+                }
+                catch (InvalidOperationException) { }
+            });
+        }
+
+        int cloudNavToken;
+        void NavigateCloud(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return;
+            driveKey = path;
+            current = path;
+            char glyph;
+            List<AddressBar.Crumb> crumbs = Crumbs(path, out glyph);
+            address.SetPath(crumbs, Display(path), glyph);
+            string title = crumbs.Count > 0 ? crumbs[crumbs.Count - 1].Text : Display(path);
+            driveCaption.Text = title;
+            suppressTree = true;
+            try
+            {
+                Reveal(tree, paneDriveRoot, path);
+            }
+            finally { suppressTree = false; }
+
+            if (string.Equals(path, "vfs:pc", StringComparison.OrdinalIgnoreCase))
+            {
+                rows.Clear();
+                foreach (Provider provider in providers)
+                {
+                    Row row = new Row();
+                    row.Name = provider.Title;
+                    row.Status = provider.IsOnline ? "Connected" : "Not connected";
+                    row.Kind = provider.IsOnline ? "same" : "warn";
+                    row.FullPath = provider.Root;
+                    row.NavigateKey = provider.Root;
+                    row.IsDir = true;
+                    row.RealIcon = true;
+                    rows.Add(row);
+                }
+                if (userSorted || !view.Virtual) SortRows();
+                ShowRows();
+                return;
+            }
+
+            int token = ++cloudNavToken;
+            loading = true;
+            driveCaption.Text = title + " (checking cloud…)";
+            countLabel.Text = path.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase) ? "Checking Google Drive…" : "Checking cloud files…";
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                List<Row> fetched = new List<Row>();
+                try
+                {
+                    if (path.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Provider p = null;
+                        foreach (Provider cand in providers)
+                        {
+                            if (cand != null && !string.IsNullOrEmpty(cand.Root) && path.StartsWith(cand.Root, StringComparison.OrdinalIgnoreCase))
+                            {
+                                p = cand;
+                                break;
+                            }
+                        }
+                        if (p == null) p = Store.FindProvider(providers, activeProviderId);
+                        string rel = p != null ? Store.Relative(path, p.Root) : "";
+                        fetched.AddRange(ListGoogleFolder(p, rel, localKey, CurrentLink(), null));
+                    }
+                    else
+                    {
+                        fetched.AddRange(ListFolder(path, localKey, "", false, CurrentLink(), null));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Store.Log("NavigateCloud error: " + ex.Message);
+                }
+                try
+                {
+                    BeginInvoke(new Action(delegate
+                    {
+                        if (token != cloudNavToken) return;
+                        loading = false;
+                        driveCaption.Text = title;
+                        rows.Clear();
+                        rows.AddRange(fetched);
+                        if (userSorted || !view.Virtual) SortRows();
+                        ShowRows();
+                    }));
+                }
+                catch (InvalidOperationException) { }
+            });
         }
 
         List<Row> ListFolder(string folder, string otherFolder, string relBase, bool folderIsLocal, LinkFolder link, Dictionary<string, Snap> state)
@@ -1977,7 +2557,7 @@ namespace DriveFolderSync
             List<Row> source = view == localList ? localRows : rows;
             int total = source.Count;
             int shown = view.Items.Count;
-            if (loading) countLabel.Text = "Loading\u2026";
+            if (loading) countLabel.Text = "Checking folders\u2026";
             else if (shown != total) countLabel.Text = shown + " of " + total + " items";
             else countLabel.Text = total + (total == 1 ? " item" : " items");
             int selected = list.SelectedItems.Count + localList.SelectedItems.Count;
@@ -2170,12 +2750,24 @@ namespace DriveFolderSync
             if (row.IsDir)
             {
                 string key = string.IsNullOrEmpty(row.NavigateKey) ? row.FullPath : row.NavigateKey;
-                if (!string.IsNullOrEmpty(key)) Navigate(key, true);
+                if (!string.IsNullOrEmpty(key))
+                {
+                    if (syncedBrowsing) Navigate(key, true);
+                    else if (view == localList) NavigateLocal(key);
+                    else NavigateCloud(key);
+                }
             }
-            else if (!string.IsNullOrEmpty(row.FullPath) && File.Exists(row.FullPath))
+            else if (!string.IsNullOrEmpty(row.FullPath))
             {
-                try { Process.Start(new ProcessStartInfo(row.FullPath) { UseShellExecute = true }); }
-                catch (Exception ex) { Dialogs.Error(this, "Couldn't open " + row.Name, ex.Message); }
+                if (File.Exists(row.FullPath))
+                {
+                    try { Process.Start(new ProcessStartInfo(row.FullPath) { UseShellExecute = true }); }
+                    catch (Exception ex) { Dialogs.Error(this, "Couldn't open " + row.Name, ex.Message); }
+                }
+                else if (row.FullPath.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+                {
+                    DownloadSelected();
+                }
             }
         }
 
@@ -2222,7 +2814,14 @@ namespace DriveFolderSync
             {
                 Row row = item.Tag as Row;
                 if (row == null || !IsRealPath(row.FullPath)) continue;
-                if (!File.Exists(row.FullPath) && !Directory.Exists(row.FullPath)) continue;
+                if (!File.Exists(row.FullPath) && !Directory.Exists(row.FullPath))
+                {
+                    if (row.FullPath.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        paths.Add(row.FullPath);
+                    }
+                    continue;
+                }
                 paths.Add(row.FullPath);
             }
             if (paths.Count == 0) return;
@@ -2231,12 +2830,12 @@ namespace DriveFolderSync
 
         void List_DragEnter(object sender, DragEventArgs e)
         {
-            e.Effect = !busy && !string.IsNullOrEmpty(activeLinkId) && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Effect = !busy && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
         }
 
         void List_DragOver(object sender, DragEventArgs e)
         {
-            e.Effect = !busy && !string.IsNullOrEmpty(activeLinkId) && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Effect = !busy && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
         }
 
         void List_DragDrop(object sender, DragEventArgs e)
@@ -2248,7 +2847,7 @@ namespace DriveFolderSync
             string dest = DropFolder(target, e);
             if (string.IsNullOrEmpty(dest))
             {
-                ShowAction("Drop onto a folder inside the selected folder pair.", "warn");
+                ShowAction("Drop onto a valid local or cloud folder.", "warn");
                 return;
             }
             StartTransfer(target == localList, dest, sources);
@@ -2272,7 +2871,7 @@ namespace DriveFolderSync
         {
             if (busy) return;
             if (!StartPairTransfer(toLocal, destFolder, sources))
-                ShowAction("Select an attached folder before copying between panes.", "warn");
+                ShowAction("Select an attached folder or Google Drive location before copying.", "warn");
         }
 
         void ListMenu_Opening(object sender, CancelEventArgs e)
@@ -2287,22 +2886,40 @@ namespace DriveFolderSync
                 ToolStripMenuItem open = MenuItem("Open", first.IsDir ? Glyphs.FolderOpen : Glyphs.OpenFile, new EventHandler(List_ItemActivate));
                 open.Font = Theme.Strong;
                 listMenu.Items.Add(open);
+                if (sourceList == localList)
+                {
+                    listMenu.Items.Add(MenuItem("Upload to Google Drive →", Glyphs.Upload, delegate { UploadSelected(); }));
+                }
+                else if (sourceList == list)
+                {
+                    listMenu.Items.Add(MenuItem("← Download to PC", Glyphs.Download, delegate { DownloadSelected(); }));
+                }
                 if (selected.Count == 1 && IsRealPath(first.FullPath))
                 {
                     string path = first.FullPath;
-                    listMenu.Items.Add(MenuItem("Show in File Explorer", Glyphs.OpenLocal, delegate { ShowInExplorer(path); }));
+                    if (!path.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        listMenu.Items.Add(MenuItem("Show in File Explorer", Glyphs.OpenLocal, delegate { ShowInExplorer(path); }));
+                    }
                     listMenu.Items.Add(MenuItem("Copy path", Glyphs.Copy, delegate { CopyPath(path); }));
                 }
                 if (!view.Virtual || current == "vfs:pc")
                 {
                     listMenu.Items.Add(new ToolStripSeparator());
                     listMenu.Items.Add(MenuItem("Local replica", Glyphs.SaveLocal, new EventHandler(Replica_Click)));
-                    if (selected.Count == 1 && first.IsDir) listMenu.Items.Add(MenuItem("Attach folder…", Glyphs.Link, new EventHandler(Link_Click)));
+                    if (selected.Count == 1 && first.IsDir && !first.FullPath.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        listMenu.Items.Add(MenuItem("Attach folder…", Glyphs.Link, new EventHandler(Link_Click)));
+                    }
                 }
             }
             else
             {
                 listMenu.Items.Add(MenuItem("Refresh", Glyphs.Refresh, delegate { RefreshAll(); }));
+                if (sourceList == list || (driveKey != null && driveKey.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase)))
+                {
+                    listMenu.Items.Add(MenuItem("+ New Cloud Folder…", Glyphs.FolderOpen, delegate { CreateNewCloudFolder(); }));
+                }
                 if (IsRealPath(current) && Directory.Exists(current))
                 {
                     string path = current;
@@ -2327,12 +2944,18 @@ namespace DriveFolderSync
             NodeTag selected = sourceTree == null || sourceTree.SelectedNode == null ? null : sourceTree.SelectedNode.Tag as NodeTag;
             string path = selected == null ? current : selected.Key;
             treeMenu.Items.Add(MenuItem("Refresh", Glyphs.Refresh, delegate { RefreshAll(); }));
-            if (IsRealPath(path) && Directory.Exists(path))
+            if (IsRealPath(path))
             {
-                treeMenu.Items.Add(MenuItem("Open in File Explorer", Glyphs.OpenLocal, delegate { ShowInExplorer(path); }));
+                if (Directory.Exists(path))
+                {
+                    treeMenu.Items.Add(MenuItem("Open in File Explorer", Glyphs.OpenLocal, delegate { ShowInExplorer(path); }));
+                }
                 treeMenu.Items.Add(MenuItem("Copy path", Glyphs.Copy, delegate { CopyPath(path); }));
-                treeMenu.Items.Add(new ToolStripSeparator());
-                treeMenu.Items.Add(MenuItem("Attach this folder…", Glyphs.Link, new EventHandler(Link_Click)));
+                if (Directory.Exists(path))
+                {
+                    treeMenu.Items.Add(new ToolStripSeparator());
+                    treeMenu.Items.Add(MenuItem("Attach this folder…", Glyphs.Link, new EventHandler(Link_Click)));
+                }
             }
             AddSyncItems(treeMenu, path);
         }
@@ -2610,7 +3233,7 @@ namespace DriveFolderSync
                 if (provider.Name.IndexOf("onedrive", StringComparison.OrdinalIgnoreCase) >= 0) provider.Kind = "OneDrive";
                 provider.Detail = provider.Root;
                 provider.Id = provider.Kind.ToLowerInvariant() + ":" + provider.Root.ToLowerInvariant();
-                try { using (SyncEngine.LockState(30)) Store.SaveCustomProvider(provider); }
+                try { Store.SaveCustomProvider(provider); }
                 catch (Exception ex)
                 {
                     Dialogs.Error(this, "Couldn't add this cloud drive", ex.Message);
@@ -2730,7 +3353,19 @@ namespace DriveFolderSync
             SyncProgress tracked = liveProgress;
             if (tracked == null) return;
             int percent = tracked.Percent;
-            if (percent < 0) progress.Style = ProgressBarStyle.Marquee;
+            if (percent < 0)
+            {
+                int checkPercent = tracked.CheckPercent;
+                if (checkPercent >= 0)
+                {
+                    progress.Style = ProgressBarStyle.Continuous;
+                    progress.Value = Math.Max(0, Math.Min(100, checkPercent));
+                }
+                else
+                {
+                    progress.Style = ProgressBarStyle.Marquee;
+                }
+            }
             else
             {
                 progress.Style = ProgressBarStyle.Continuous;
@@ -2744,6 +3379,11 @@ namespace DriveFolderSync
         // Returns true when the drive can be used: either it isn't Google Drive or the account is connected.
         bool EnsureGoogleSignIn(Provider provider)
         {
+            if (provider == null)
+            {
+                ShowGoogleSignIn();
+                return GoogleAuth.Configured && GoogleAuth.GetAccounts().Count > 0;
+            }
             string email = GoogleAuth.EmailOf(provider);
             if (email == null || (GoogleAuth.Configured && GoogleAuth.IsSignedIn(email))) return true;
             ShowGoogleSignIn();
@@ -3098,6 +3738,12 @@ namespace DriveFolderSync
             if (provider == null)
             {
                 ShowError("Choose a drive first.");
+                return;
+            }
+            if (provider.Root.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+            {
+                string input = Dialogs.Prompt(this, "Cloud folder", "Enter the relative folder path on Google Drive:", cloudBox.Box.Text.Trim());
+                if (!string.IsNullOrEmpty(input)) cloudBox.Box.Text = input.Trim().Trim('\\');
                 return;
             }
             using (FolderBrowserDialog dialog = new FolderBrowserDialog())

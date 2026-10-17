@@ -228,6 +228,56 @@ namespace DriveFolderSync
                     if ((string)Field(form, "localKey") != local) throw new Exception("folder selector did not open the selected pair");
                     if (((SplitContainer)Field(form, "split")).Top != ((SplitContainer)Field(form, "localSplit")).Top)
                         throw new Exception("paired file panes were not aligned");
+                    ToolStripButton syncedBtn = (ToolStripButton)Field(form, "syncedBrowsingButton");
+                    if (syncedBtn == null || !syncedBtn.Visible) throw new Exception("synced browsing button was not found or visible");
+                    if (!syncedBtn.Checked) throw new Exception("synced browsing button should be checked by default");
+                    CheckBox syncedCheck = (CheckBox)Field(form, "syncedBrowsingCheck");
+                    if (syncedCheck == null || !syncedCheck.Visible) throw new Exception("synced browsing checkbox was not found or visible on front screen");
+                    if (!syncedCheck.Checked) throw new Exception("synced browsing checkbox should be checked by default");
+                    syncedBtn.PerformClick();
+                    if (syncedBtn.Checked || (bool)Field(form, "syncedBrowsing") || syncedCheck.Checked)
+                        throw new Exception("clicking synced browsing button did not disable synced browsing or update checkbox");
+                    form.GetType().GetMethod("NavigateLocal", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { Path.Combine(local, "Notes") });
+                    WaitForLoad(form);
+                    if ((string)Field(form, "localKey") != Path.Combine(local, "Notes"))
+                        throw new Exception("NavigateLocal did not update localKey");
+                    if ((string)Field(form, "driveKey") != cloud)
+                        throw new Exception("driveKey changed during independent local navigation: " + Field(form, "driveKey"));
+                    form.GetType().GetMethod("NavigateCloud", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { drive.Root });
+                    WaitForLoad(form);
+                    if ((string)Field(form, "driveKey") != drive.Root)
+                        throw new Exception("NavigateCloud did not update driveKey");
+                    if ((string)Field(form, "localKey") != Path.Combine(local, "Notes"))
+                        throw new Exception("localKey changed during independent cloud navigation: " + Field(form, "localKey"));
+                    syncedBtn.PerformClick();
+                    if (!syncedBtn.Checked || !(bool)Field(form, "syncedBrowsing") || !syncedCheck.Checked)
+                        throw new Exception("clicking synced browsing button did not re-enable synced browsing or update checkbox");
+                    syncedCheck.Checked = false;
+                    if (syncedBtn.Checked || (bool)Field(form, "syncedBrowsing"))
+                        throw new Exception("unchecking synced browsing checkbox did not disable synced browsing or update button");
+                    syncedCheck.Checked = true;
+                    if (!syncedBtn.Checked || !(bool)Field(form, "syncedBrowsing"))
+                        throw new Exception("checking synced browsing checkbox did not enable synced browsing or update button");
+
+                    // Regression test: toggling synced browsing or settings while a background sync holds LockState must NEVER hang or block
+                    using (SyncEngine.LockState(5))
+                    {
+                        syncedCheck.Checked = false;
+                        if (syncedBtn.Checked || (bool)Field(form, "syncedBrowsing"))
+                            throw new Exception("unchecking synced browsing during sync did not update state");
+                        syncedCheck.Checked = true;
+                        if (!syncedBtn.Checked || !(bool)Field(form, "syncedBrowsing"))
+                            throw new Exception("checking synced browsing during sync did not update state");
+                        Store.SetBackupOnStartup(false);
+                        Store.SetBackupOnStartup(true);
+                        UpdateManager.SetAutomatic(false);
+                        UpdateManager.SetAutomatic(true);
+                        GoogleAuth.SaveClient("test-id", "test-secret");
+                    }
+                    if (Field(form, "uploadDirectButton") == null || Field(form, "cloudDownloadButton") == null || Field(form, "cloudNewFolderButton") == null)
+                        throw new Exception("direct cloud action toolbar buttons are missing");
                     form.Size = Theme.S(980, 560);
                     WaitForLoad(form);
                     NoSideScroll(form, "at the minimum size");
@@ -273,6 +323,23 @@ namespace DriveFolderSync
                     if (File.ReadAllText(Path.Combine(local, "Brief.txt")) != "Local edit" || (bool)Field(form, "busy"))
                         throw new Exception("canceling the replace prompt still copied the file");
                     File.WriteAllText(Path.Combine(local, "Brief.txt"), "Project brief");
+
+                    // Test uploading a file to the cloud folder via StartPairTransfer
+                    string uploadFile = Path.Combine(local, "UploadTest.txt");
+                    File.WriteAllText(uploadFile, "Testing upload file to cloud");
+                    form.GetType().GetMethod("StartPairTransfer", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { false, cloud, new string[] { uploadFile } });
+                    DateTime waitUpload = DateTime.UtcNow.AddSeconds(10);
+                    while ((bool)Field(form, "busy") && DateTime.UtcNow < waitUpload)
+                    {
+                        Application.DoEvents();
+                        Thread.Sleep(10);
+                    }
+                    string cloudUploaded = Path.Combine(cloud, "UploadTest.txt");
+                    if (!File.Exists(cloudUploaded)) throw new Exception("file upload to cloud failed: target file not created");
+                    if (File.ReadAllText(cloudUploaded) != "Testing upload file to cloud") throw new Exception("file upload to cloud content mismatch");
+                    File.Delete(cloudUploaded);
+                    File.Delete(uploadFile);
                     string trash = Path.Combine(drive.Root, "Trash simulation");
                     Directory.CreateDirectory(trash);
                     Directory.Move(Path.Combine(cloud, "Notes"), Path.Combine(trash, "Notes"));

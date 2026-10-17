@@ -24,26 +24,49 @@ namespace DriveFolderSync
         static readonly object Gate = new object();
         static readonly Dictionary<string, KeyValuePair<string, DateTime>> Tokens = new Dictionary<string, KeyValuePair<string, DateTime>>(StringComparer.OrdinalIgnoreCase);
 
+        internal static void SetTestToken(string email, string token)
+        {
+            lock (Gate)
+            {
+                if (token == null) Tokens.Remove(email);
+                else Tokens[email] = new KeyValuePair<string, DateTime>(token, DateTime.UtcNow.AddHours(1));
+            }
+        }
+        static volatile TcpListener activeSignInListener;
+        static volatile bool signInCanceled;
+
+        public static void CancelSignIn()
+        {
+            signInCanceled = true;
+            try
+            {
+                TcpListener l = activeSignInListener;
+                if (l != null) l.Stop();
+            }
+            catch { }
+        }
+
         public static string ClientId { get { return Store.GetString(Store.ReadConfig(), "googleClientId"); } }
         public static string ClientSecret { get { return Store.GetString(Store.ReadConfig(), "googleClientSecret"); } }
         public static bool Configured { get { return !string.IsNullOrEmpty(ClientId) && !string.IsNullOrEmpty(ClientSecret); } }
 
         public static void SaveClient(string id, string secret)
         {
-            using (SyncEngine.LockState(60))
-            {
-                Dictionary<string, object> config = Store.ReadConfig();
-                config["googleClientId"] = (id ?? "").Trim();
-                config["googleClientSecret"] = (secret ?? "").Trim();
-                Store.WriteObject(Store.ConfigPath, config);
-            }
+            Store.SetGoogleClient(id, secret);
         }
 
         // The account behind a Google Drive tab, from its provider id "google:<email>".
         public static string EmailOf(Provider provider)
         {
             if (provider == null || provider.Kind != "GoogleDrive" || string.IsNullOrEmpty(provider.Id)) return null;
-            return provider.Id.StartsWith("google:", StringComparison.OrdinalIgnoreCase) ? provider.Id.Substring(7) : null;
+            if (provider.Id.StartsWith("google:", StringComparison.OrdinalIgnoreCase)) return provider.Id.Substring(7);
+            if (!string.IsNullOrEmpty(provider.Root) && provider.Root.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+            {
+                string r = provider.Root.Substring(7);
+                int slash = r.IndexOf('\\');
+                return slash < 0 ? r : r.Substring(0, slash);
+            }
+            return null;
         }
 
         static string TokenPath(string email)
@@ -56,12 +79,41 @@ namespace DriveFolderSync
             return !string.IsNullOrEmpty(email) && File.Exists(TokenPath(email));
         }
 
+        public static List<string> GetAccounts()
+        {
+            List<string> accounts = new List<string>();
+            Dictionary<string, object> cfg = Store.ReadConfig();
+            foreach (string acc in Store.GetStringList(cfg, "googleAccounts"))
+            {
+                if (IsSignedIn(acc) && !accounts.Contains(acc)) accounts.Add(acc);
+            }
+            string dir = Path.Combine(Store.Root, "google");
+            if (Directory.Exists(dir))
+            {
+                foreach (string file in Directory.GetFiles(dir, "*.token"))
+                {
+                    string name = Path.GetFileNameWithoutExtension(file);
+                    if (!string.IsNullOrEmpty(name) && !accounts.Contains(name)) accounts.Add(name);
+                }
+            }
+            return accounts;
+        }
+
         public static void SignOut(string email)
         {
             if (string.IsNullOrEmpty(email)) return;
             lock (Gate) Tokens.Remove(email);
             string path = TokenPath(email);
             if (File.Exists(path)) File.Delete(path);
+            try
+            {
+                Dictionary<string, object> cfg = Store.ReadConfig();
+                List<string> accs = Store.GetStringList(cfg, "googleAccounts");
+                accs.RemoveAll(delegate(string a) { return string.Equals(a, email, StringComparison.OrdinalIgnoreCase); });
+                cfg["googleAccounts"] = accs;
+                Store.WriteObject(Store.ConfigPath, cfg);
+            }
+            catch { }
             Store.Log("signed out of Google Drive for " + email);
         }
 
@@ -74,6 +126,20 @@ namespace DriveFolderSync
             File.WriteAllBytes(temp, sealedToken);
             if (File.Exists(path)) File.Replace(temp, path, null, true);
             else File.Move(temp, path);
+            try
+            {
+                Dictionary<string, object> cfg = Store.ReadConfig();
+                List<string> accs = Store.GetStringList(cfg, "googleAccounts");
+                bool found = false;
+                foreach (string a in accs) if (string.Equals(a, email, StringComparison.OrdinalIgnoreCase)) found = true;
+                if (!found)
+                {
+                    accs.Add(email.ToLowerInvariant());
+                    cfg["googleAccounts"] = accs;
+                    Store.WriteObject(Store.ConfigPath, cfg);
+                }
+            }
+            catch { }
         }
 
         static string LoadRefresh(string email)
@@ -151,6 +217,7 @@ namespace DriveFolderSync
         public static string SignIn(string loginHint, int timeoutSeconds)
         {
             if (!Configured) throw new IOException("Enter the Google sign-in client ID and secret first.");
+            signInCanceled = false;
             byte[] random = new byte[32];
             using (RandomNumberGenerator rng = RandomNumberGenerator.Create()) rng.GetBytes(random);
             string verifier = Base64Url(random);
@@ -159,6 +226,7 @@ namespace DriveFolderSync
             string state = Guid.NewGuid().ToString("n");
             TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
+            activeSignInListener = listener;
             try
             {
                 int port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -171,6 +239,7 @@ namespace DriveFolderSync
                     + (string.IsNullOrEmpty(loginHint) ? "" : "&login_hint=" + Uri.EscapeDataString(loginHint));
                 Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
                 Dictionary<string, string> query = WaitForRedirect(listener, DateTime.UtcNow.AddSeconds(timeoutSeconds));
+                if (signInCanceled) throw new OperationCanceledException("Google sign-in was canceled.");
                 if (query.ContainsKey("error"))
                     throw new IOException(query["error"] == "access_denied" ? "Google sign-in was canceled." : "Google sign-in failed: " + query["error"]);
                 if (!query.ContainsKey("state") || query["state"] != state) throw new IOException("Google sign-in returned an unexpected response.");
@@ -182,6 +251,7 @@ namespace DriveFolderSync
                 form["grant_type"] = "authorization_code";
                 form["code_verifier"] = verifier;
                 Dictionary<string, object> reply = PostForm(TokenUrl, form);
+                if (signInCanceled) throw new OperationCanceledException("Google sign-in was canceled.");
                 string refresh = Store.GetString(reply, "refresh_token");
                 string access = Store.GetString(reply, "access_token");
                 if (string.IsNullOrEmpty(refresh) || string.IsNullOrEmpty(access))
@@ -194,18 +264,65 @@ namespace DriveFolderSync
                 Store.Log("signed in to Google Drive as " + email);
                 return email;
             }
-            finally { listener.Stop(); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception)
+            {
+                if (signInCanceled) throw new OperationCanceledException("Google sign-in was canceled.");
+                throw;
+            }
+            finally
+            {
+                activeSignInListener = null;
+                try { listener.Stop(); } catch { }
+            }
+        }
+
+        internal static Dictionary<string, string> WaitForRedirectForTest(TcpListener listener, DateTime deadline)
+        {
+            activeSignInListener = listener;
+            signInCanceled = false;
+            try
+            {
+                return WaitForRedirect(listener, deadline);
+            }
+            finally
+            {
+                activeSignInListener = null;
+            }
         }
 
         static Dictionary<string, string> WaitForRedirect(TcpListener listener, DateTime deadline)
         {
             while (true)
             {
+                if (signInCanceled) throw new OperationCanceledException("Google sign-in was canceled.");
                 TimeSpan left = deadline - DateTime.UtcNow;
                 if (left <= TimeSpan.Zero) throw new IOException("Google sign-in timed out. Try again.");
-                IAsyncResult pending = listener.BeginAcceptTcpClient(null, null);
-                if (!pending.AsyncWaitHandle.WaitOne(left)) throw new IOException("Google sign-in timed out. Try again.");
-                using (TcpClient client = listener.EndAcceptTcpClient(pending))
+                IAsyncResult pending;
+                try { pending = listener.BeginAcceptTcpClient(null, null); }
+                catch (Exception)
+                {
+                    if (signInCanceled) throw new OperationCanceledException("Google sign-in was canceled.");
+                    throw;
+                }
+                while (!pending.AsyncWaitHandle.WaitOne(150))
+                {
+                    if (signInCanceled)
+                    {
+                        try { listener.Stop(); } catch { }
+                        throw new OperationCanceledException("Google sign-in was canceled.");
+                    }
+                    if (DateTime.UtcNow >= deadline) throw new IOException("Google sign-in timed out. Try again.");
+                }
+                if (signInCanceled) throw new OperationCanceledException("Google sign-in was canceled.");
+                TcpClient client;
+                try { client = listener.EndAcceptTcpClient(pending); }
+                catch (Exception)
+                {
+                    if (signInCanceled) throw new OperationCanceledException("Google sign-in was canceled.");
+                    throw;
+                }
+                using (client)
                 {
                     NetworkStream stream = client.GetStream();
                     stream.ReadTimeout = 10000;
@@ -273,7 +390,7 @@ namespace DriveFolderSync
         public const string ShortcutType = "application/vnd.google-apps.shortcut";
         const string FileFields = "id,name,mimeType,size,modifiedTime,md5Checksum,parents";
         public static int SimpleLimit = 5 * 1024 * 1024;
-        public static int ChunkSize = 8 * 1024 * 1024;
+        public static int ChunkSize = 16 * 1024 * 1024;
         public static int RetryDelayMs = 1000;
         readonly string apiBase;
         readonly Func<bool, string> token;
@@ -287,14 +404,18 @@ namespace DriveFolderSync
         internal static HttpWebRequest NewRequest(string method, string url)
         {
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            ServicePointManager.DefaultConnectionLimit = Math.Max(ServicePointManager.DefaultConnectionLimit, 64);
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.Method = method;
             request.UserAgent = "DriveFolderSync/" + Store.Version;
-            // A Google address that is unreachable costs about 21 seconds before the next one is tried.
             request.Timeout = 90000;
             request.ReadWriteTimeout = 60000;
             request.AllowAutoRedirect = false;
+            request.KeepAlive = true;
+            request.Proxy = null;
             request.ServicePoint.Expect100Continue = false;
+            request.ServicePoint.UseNagleAlgorithm = false;
+            request.ServicePoint.ConnectionLimit = 64;
             return request;
         }
 
@@ -413,6 +534,7 @@ namespace DriveFolderSync
         {
             FileRecord record = new FileRecord();
             record.Id = Store.GetString(item, "id");
+            record.Rel = Store.GetString(item, "name");
             record.Md5 = Store.GetString(item, "md5Checksum");
             long size;
             long.TryParse(Store.GetString(item, "size"), NumberStyles.Integer, CultureInfo.InvariantCulture, out size);
@@ -438,6 +560,103 @@ namespace DriveFolderSync
             if (!long.TryParse(Store.GetString(quota, "limit"), NumberStyles.Integer, CultureInfo.InvariantCulture, out limit)) return -1;
             long.TryParse(Store.GetString(quota, "usage"), NumberStyles.Integer, CultureInfo.InvariantCulture, out usage);
             return Math.Max(0, limit - usage);
+        }
+
+        public bool GetQuotaInfo(out long used, out long limit)
+        {
+            used = 0;
+            limit = -1;
+            try
+            {
+                Dictionary<string, object> about = Json(Send("GET", apiBase + "/drive/v3/about?fields=storageQuota(limit,usage)", null, null, null));
+                Dictionary<string, object> quota = about.ContainsKey("storageQuota") ? about["storageQuota"] as Dictionary<string, object> : null;
+                if (quota == null) return false;
+                long.TryParse(Store.GetString(quota, "limit"), NumberStyles.Integer, CultureInfo.InvariantCulture, out limit);
+                long.TryParse(Store.GetString(quota, "usage"), NumberStyles.Integer, CultureInfo.InvariantCulture, out used);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public void DeleteFile(string fileId)
+        {
+            if (string.IsNullOrEmpty(fileId)) return;
+            Send("DELETE", apiBase + "/drive/v3/files/" + Uri.EscapeDataString(fileId), null, null, null);
+        }
+
+        public string ResolvePathFolderId(string rootFolderId, string relativePath, bool create)
+        {
+            if (string.IsNullOrEmpty(relativePath)) return rootFolderId;
+            string currentId = rootFolderId;
+            foreach (string part in relativePath.Split('\\'))
+            {
+                if (string.IsNullOrEmpty(part)) continue;
+                string next = FindFolder(currentId, part);
+                if (next == null)
+                {
+                    if (!create) return null;
+                    next = CreateFolder(currentId, part);
+                }
+                currentId = next;
+            }
+            return currentId;
+        }
+
+        public int UploadDirectoryDirect(string localDir, string parentId, SyncProgress progress)
+        {
+            string dirName = Path.GetFileName(localDir.TrimEnd('\\'));
+            string targetFolderId = FindFolder(parentId, dirName);
+            if (targetFolderId == null) targetFolderId = CreateFolder(parentId, dirName);
+            int count = 0;
+            string[] files = Directory.GetFiles(SyncEngine.LongPath(localDir));
+            foreach (string file in files)
+            {
+                if (progress != null && progress.Canceled) throw new OperationCanceledException();
+                string fileName = Path.GetFileName(file);
+                if (SyncEngine.SkipName(fileName, false)) continue;
+                FileRecord existing = FindFile(targetFolderId, fileName);
+                DateTime mtime = File.GetLastWriteTimeUtc(SyncEngine.LongPath(file));
+                Upload(file, fileName, targetFolderId, existing == null ? null : existing.Id, mtime, progress);
+                count++;
+            }
+            string[] subdirs = Directory.GetDirectories(SyncEngine.LongPath(localDir));
+            foreach (string subdir in subdirs)
+            {
+                if (progress != null && progress.Canceled) throw new OperationCanceledException();
+                string subName = Path.GetFileName(subdir);
+                if (SyncEngine.SkipName(subName, true) || SyncEngine.IsRedirect(subdir, File.GetAttributes(subdir))) continue;
+                count += UploadDirectoryDirect(subdir, targetFolderId, progress);
+            }
+            return count;
+        }
+
+        public int DownloadDirectoryDirect(string folderId, string localDir, SyncProgress progress)
+        {
+            Directory.CreateDirectory(SyncEngine.LongPath(localDir));
+            int count = 0;
+            List<Dictionary<string, object>> children = Query(Quote(folderId) + " in parents and trashed = false");
+            foreach (Dictionary<string, object> item in children)
+            {
+                if (progress != null && progress.Canceled) throw new OperationCanceledException();
+                string name = Store.GetString(item, "name");
+                string mime = Store.GetString(item, "mimeType");
+                bool isDir = mime == FolderType;
+                if (SyncEngine.SkipName(name, isDir)) continue;
+                if (!isDir && (mime.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal) || mime == ShortcutType)) continue;
+                if (isDir)
+                {
+                    string subDir = Path.Combine(localDir, name);
+                    count += DownloadDirectoryDirect(Store.GetString(item, "id"), subDir, progress);
+                }
+                else
+                {
+                    FileRecord record = Record(item);
+                    string dest = Path.Combine(localDir, name);
+                    Download(record, dest, progress);
+                    count++;
+                }
+            }
+            return count;
         }
 
         public string RootId()
@@ -503,29 +722,36 @@ namespace DriveFolderSync
         // Creates a file (fileId null) or replaces the contents of an existing one, keeping its history.
         public FileRecord Upload(string path, string name, string parentId, string fileId, DateTime mtimeUtc, SyncProgress progress)
         {
+            return Upload(path, name, parentId, fileId, mtimeUtc, progress, name);
+        }
+
+        public FileRecord Upload(string path, string name, string parentId, string fileId, DateTime mtimeUtc, SyncProgress progress, string rel)
+        {
             long size = new FileInfo(SyncEngine.LongPath(path)).Length;
             string md5 = Md5Of(path);
             Dictionary<string, object> meta = new Dictionary<string, object>();
             meta["modifiedTime"] = Rfc3339(mtimeUtc);
-            if (fileId == null)
+            bool isNew = string.IsNullOrEmpty(fileId);
+            if (isNew)
             {
                 meta["name"] = name;
                 meta["parents"] = new string[] { parentId };
             }
-            string url = apiBase + "/upload/drive/v3/files" + (fileId == null ? "" : "/" + fileId);
-            string method = fileId == null ? "POST" : "PATCH";
+            string url = apiBase + "/upload/drive/v3/files" + (isNew ? "" : "/" + fileId);
+            string method = isNew ? "POST" : "PATCH";
             string fields = "&fields=" + Uri.EscapeDataString(FileFields);
             Dictionary<string, object> result = size <= SimpleLimit
-                ? UploadSmall(method, url + "?uploadType=multipart" + fields, Serialize(meta), path, size, progress)
-                : UploadResumable(method, url + "?uploadType=resumable" + fields, Serialize(meta), path, size, progress);
+                ? UploadSmall(method, url + "?uploadType=multipart" + fields, Serialize(meta), path, size, progress, rel)
+                : UploadResumable(method, url + "?uploadType=resumable" + fields, Serialize(meta), path, size, progress, rel);
             FileRecord record = Record(result);
+            if (string.IsNullOrEmpty(record.Rel)) record.Rel = string.IsNullOrEmpty(rel) ? name : rel;
             if (record.Length != size) throw new IOException("Google Drive stored " + record.Length + " bytes instead of " + size + " for " + name);
             if (!string.IsNullOrEmpty(record.Md5) && !string.Equals(record.Md5, md5, StringComparison.OrdinalIgnoreCase))
                 throw new IOException("The uploaded copy of " + name + " didn't match its checksum.");
             return record;
         }
 
-        Dictionary<string, object> UploadSmall(string method, string url, string meta, string path, long size, SyncProgress progress)
+        Dictionary<string, object> UploadSmall(string method, string url, string meta, string path, long size, SyncProgress progress, string rel)
         {
             byte[] data = new byte[size];
             using (FileStream input = new FileStream(SyncEngine.LongPath(path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
@@ -539,7 +765,7 @@ namespace DriveFolderSync
             body.Write(data, 0, data.Length);
             body.Write(tail, 0, tail.Length);
             Dictionary<string, object> result = Json(Send(method, url, "multipart/related; boundary=" + boundary, body.ToArray(), null));
-            if (progress != null) progress.Copied(size);
+            if (progress != null) progress.Copied(rel, size);
             return result;
         }
 
@@ -554,7 +780,7 @@ namespace DriveFolderSync
             }
         }
 
-        Dictionary<string, object> UploadResumable(string method, string url, string meta, string path, long size, SyncProgress progress)
+        Dictionary<string, object> UploadResumable(string method, string url, string meta, string path, long size, SyncProgress progress, string rel)
         {
             Dictionary<string, string> startHeaders = new Dictionary<string, string>();
             startHeaders["X-Upload-Content-Type"] = "application/octet-stream";
@@ -575,7 +801,7 @@ namespace DriveFolderSync
                     input.Position = offset;
                     ReadFully(input, buffer, count);
                     HttpReply reply = null;
-                    try { reply = SendChunk(session, buffer, count, offset, size, progress); }
+                    try { reply = SendChunk(session, buffer, count, offset, size, progress, rel); }
                     catch (WebException) { }
                     catch (IOException) { }
                     if (reply != null && (reply.Status == 200 || reply.Status == 201)) return Json(reply);
@@ -604,7 +830,7 @@ namespace DriveFolderSync
             }
         }
 
-        HttpReply SendChunk(string session, byte[] buffer, int count, long offset, long size, SyncProgress progress)
+        HttpReply SendChunk(string session, byte[] buffer, int count, long offset, long size, SyncProgress progress, string rel)
         {
             HttpWebRequest request = NewRequest("PUT", session);
             request.ContentLength = count;
@@ -619,7 +845,7 @@ namespace DriveFolderSync
                     int slice = Math.Min(256 * 1024, count - written);
                     output.Write(buffer, written, slice);
                     written += slice;
-                    if (progress != null) progress.Copied(offset + written);
+                    if (progress != null) progress.Copied(rel, offset + written);
                 }
             }
             return Read(request);
@@ -679,7 +905,7 @@ namespace DriveFolderSync
                             output.Write(buffer, 0, count);
                             hash.TransformBlock(buffer, 0, count, null, 0);
                             written += count;
-                            if (progress != null) progress.Copied(written);
+                            if (progress != null) progress.Copied(remote.Rel, written);
                         }
                         hash.TransformFinalBlock(new byte[0], 0, 0);
                         md5 = BitConverter.ToString(hash.Hash).Replace("-", "").ToLowerInvariant();
@@ -710,6 +936,7 @@ namespace DriveFolderSync
         readonly GoogleDriveClient client;
         readonly string email;
         readonly string relative;
+        readonly object remoteGate = new object();
         readonly Dictionary<string, string> folders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, FileRecord> files = new Dictionary<string, FileRecord>(StringComparer.OrdinalIgnoreCase);
         bool listed;
@@ -740,10 +967,13 @@ namespace DriveFolderSync
                     id = next;
                 }
             }
-            folders.Clear();
-            files.Clear();
-            folders[""] = id;
-            listed = false;
+            lock (remoteGate)
+            {
+                folders.Clear();
+                files.Clear();
+                folders[""] = id;
+                listed = false;
+            }
             return true;
         }
 
@@ -755,10 +985,19 @@ namespace DriveFolderSync
 
         public Dictionary<string, FileRecord> List(List<string> links)
         {
-            files.Clear();
-            string rootId = folders[""];
-            folders.Clear();
-            folders[""] = rootId;
+            return List(links, null);
+        }
+
+        public Dictionary<string, FileRecord> List(List<string> links, SyncProgress progress)
+        {
+            string rootId;
+            lock (remoteGate)
+            {
+                files.Clear();
+                rootId = folders[""];
+                folders.Clear();
+                folders[""] = rootId;
+            }
             Dictionary<string, string> relOf = new Dictionary<string, string>(StringComparer.Ordinal);
             relOf[rootId] = "";
             List<string> queue = new List<string>();
@@ -766,6 +1005,18 @@ namespace DriveFolderSync
             int skipped = 0;
             while (queue.Count > 0)
             {
+                if (progress != null && progress.Canceled) break;
+                if (progress != null)
+                {
+                    int foundCount;
+                    int folderCount;
+                    lock (remoteGate)
+                    {
+                        foundCount = files.Count;
+                        folderCount = Math.Max(0, folders.Count - 1);
+                    }
+                    progress.SetCheckStatus(SyncEngine.FormatScanStatus("Scanning Google Drive", foundCount, folderCount));
+                }
                 // One query covers many folders, so a large tree needs few requests.
                 List<string> batch = queue.GetRange(0, Math.Min(30, queue.Count));
                 queue.RemoveRange(0, batch.Count);
@@ -794,8 +1045,11 @@ namespace DriveFolderSync
                     if (isFolder)
                     {
                         string id = Store.GetString(item, "id");
-                        if (folders.ContainsKey(rel)) Store.Log("Google Drive has more than one folder named " + rel + "; their contents are combined");
-                        else folders[rel] = id;
+                        lock (remoteGate)
+                        {
+                            if (folders.ContainsKey(rel)) Store.Log("Google Drive has more than one folder named " + rel + "; their contents are combined");
+                            else folders[rel] = id;
+                        }
                         relOf[id] = rel;
                         queue.Add(id);
                         continue;
@@ -803,34 +1057,58 @@ namespace DriveFolderSync
                     if (mime.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal)) { skipped++; continue; }
                     FileRecord record = GoogleDriveClient.Record(item);
                     record.Rel = rel;
-                    FileRecord existing;
-                    if (files.TryGetValue(rel, out existing))
+                    lock (remoteGate)
                     {
-                        Store.Log("Google Drive has more than one file named " + rel + "; using the newest");
-                        if (existing.MtimeUtc >= record.MtimeUtc) continue;
+                        FileRecord existing;
+                        if (files.TryGetValue(rel, out existing))
+                        {
+                            Store.Log("Google Drive has more than one file named " + rel + "; using the newest");
+                            if (existing.MtimeUtc >= record.MtimeUtc) continue;
+                        }
+                        files[rel] = record;
                     }
-                    files[rel] = record;
                 }
             }
             if (skipped > 0) Store.Log("skipped " + skipped + " Google Docs files or names Windows can't use in " + Name);
-            listed = true;
-            return new Dictionary<string, FileRecord>(files, StringComparer.OrdinalIgnoreCase);
+            if (progress != null)
+            {
+                int foundCount;
+                int folderCount;
+                lock (remoteGate)
+                {
+                    foundCount = files.Count;
+                    folderCount = Math.Max(0, folders.Count - 1);
+                }
+                progress.SetCheckStatus(SyncEngine.FormatScanStatus("Scanning Google Drive", foundCount, folderCount));
+            }
+            lock (remoteGate)
+            {
+                listed = true;
+                return new Dictionary<string, FileRecord>(files, StringComparer.OrdinalIgnoreCase);
+            }
         }
 
         string FolderId(string rel, bool create)
         {
             rel = (rel ?? "").Trim('\\');
             string id;
-            if (folders.TryGetValue(rel, out id)) return id;
+            lock (remoteGate)
+            {
+                if (folders.TryGetValue(rel, out id)) return id;
+            }
             int slash = rel.LastIndexOf('\\');
             string parentRel = slash < 0 ? "" : rel.Substring(0, slash);
             string name = slash < 0 ? rel : rel.Substring(slash + 1);
             string parentId = FolderId(parentRel, create);
             if (parentId == null) return null;
-            id = client.FindFolder(parentId, name);
-            if (id == null && create) id = client.CreateFolder(parentId, name);
-            if (id != null) folders[rel] = id;
-            return id;
+            lock (remoteGate)
+            {
+                if (folders.TryGetValue(rel, out id)) return id;
+                if (!listed) id = client.FindFolder(parentId, name);
+                if (id == null && create) id = client.CreateFolder(parentId, name);
+                if (id != null) folders[rel] = id;
+                return id;
+            }
         }
 
         public Dictionary<string, FileRecord> ListAllowed(List<string> rels)
@@ -845,7 +1123,7 @@ namespace DriveFolderSync
                 FileRecord record = client.FindFile(parentId, Path.GetFileName(rel));
                 if (record == null) continue;
                 record.Rel = rel;
-                files[rel] = record;
+                lock (remoteGate) { files[rel] = record; }
                 map[rel] = record;
             }
             return map;
@@ -855,31 +1133,64 @@ namespace DriveFolderSync
         {
             if (!listed) List(null);
             List<string> dirs = new List<string>();
-            foreach (string rel in folders.Keys)
+            lock (remoteGate)
             {
-                if (rel.Length == 0) continue;
-                bool linked = false;
-                if (links != null) foreach (string link in links.Keys) if (string.Equals(rel, link, StringComparison.OrdinalIgnoreCase) || rel.StartsWith(link + "\\", StringComparison.OrdinalIgnoreCase)) linked = true;
-                if (!linked) dirs.Add(rel);
+                foreach (string rel in folders.Keys)
+                {
+                    if (rel.Length == 0) continue;
+                    bool linked = false;
+                    if (links != null) foreach (string link in links.Keys) if (string.Equals(rel, link, StringComparison.OrdinalIgnoreCase) || rel.StartsWith(link + "\\", StringComparison.OrdinalIgnoreCase)) linked = true;
+                    if (!linked) dirs.Add(rel);
+                }
             }
             return dirs;
         }
 
         public void EnsureDirectories(List<string> rels)
         {
-            List<string> sorted = new List<string>(rels);
-            sorted.Sort(delegate(string a, string b) { return a.Length.CompareTo(b.Length); });
-            foreach (string rel in sorted) FolderId(rel, true);
+            EnsureDirectories(rels, null);
+        }
+
+        public void EnsureDirectories(List<string> rels, SyncProgress progress)
+        {
+            List<string> missing = new List<string>();
+            lock (remoteGate)
+            {
+                foreach (string rel in rels)
+                {
+                    if (string.IsNullOrEmpty(rel)) continue;
+                    string clean = rel.Trim('\\');
+                    if (clean.Length > 0 && !folders.ContainsKey(clean)) missing.Add(clean);
+                }
+            }
+            missing.Sort(delegate(string a, string b) { return a.Length.CompareTo(b.Length); });
+            int total = missing.Count;
+            DateTime start = DateTime.UtcNow;
+            for (int i = 0; i < total; i++)
+            {
+                if (progress != null)
+                {
+                    if (progress.Canceled) break;
+                    double etaSec = 0;
+                    if (i > 0)
+                    {
+                        double elapsedSec = (DateTime.UtcNow - start).TotalSeconds;
+                        etaSec = (elapsedSec / i) * (total - i);
+                    }
+                    progress.SetCheckStatus("Preparing cloud folders (" + (i + 1) + " of " + total + ")", etaSec > 0 ? (double?)etaSec : null, i + 1, total);
+                }
+                FolderId(missing[i], true);
+            }
         }
 
         public FileRecord Upload(string rel, FileRecord local, SyncProgress progress)
         {
             string parentId = FolderId(Path.GetDirectoryName(rel), true);
             FileRecord existing;
-            files.TryGetValue(rel, out existing);
-            FileRecord record = client.Upload(local.Full, Path.GetFileName(rel), parentId, existing == null ? null : existing.Id, local.MtimeUtc, progress);
+            lock (remoteGate) { files.TryGetValue(rel, out existing); }
+            FileRecord record = client.Upload(local.Full, Path.GetFileName(rel), parentId, existing == null ? null : existing.Id, local.MtimeUtc, progress, rel);
             record.Rel = rel;
-            files[rel] = record;
+            lock (remoteGate) { files[rel] = record; }
             return record;
         }
 

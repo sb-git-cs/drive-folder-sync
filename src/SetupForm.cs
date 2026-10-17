@@ -15,6 +15,9 @@ namespace DriveFolderSync
     {
         public static void Install(bool startUi)
         {
+            KillHost(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WorkDriveSync", "host.pid"));
+            KillHost(Store.PidFile);
+            KillOtherCopies();
             using (SyncEngine.LockState(180)) InstallCore(startUi);
         }
 
@@ -72,6 +75,12 @@ namespace DriveFolderSync
                     "This removes the app, the sign-in task, and the right-click command for this Windows user. Your files, in the cloud and on this PC, are not deleted.",
                     null, "Uninstall", MessageKind.Warning);
                 if (!answer) return false;
+            }
+            if (quiet)
+            {
+                KillHost(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WorkDriveSync", "host.pid"));
+                KillHost(Store.PidFile);
+                KillOtherCopies();
             }
             IDisposable stateLock = null;
             try { stateLock = SyncEngine.LockState(quiet ? 180 : 30); }

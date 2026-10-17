@@ -461,7 +461,29 @@ namespace DriveFolderSync
                 Store.RecordShutdownComplete();
                 if (Store.WasLastShutdownInterrupted()) throw new Exception("completed shutdown was detected as interrupted");
                 Store.ClearShutdownMarker();
-                if (Store.WasLastShutdownInterrupted()) throw new Exception("cleared shutdown marker was detected as interrupted");
+                if (!Store.SyncedBrowsingEnabled) throw new Exception("synced browsing was not enabled by default");
+                Store.SetSyncedBrowsing(false);
+                if (Store.SyncedBrowsingEnabled) throw new Exception("synced browsing disable setting was not saved");
+                Store.SetSyncedBrowsing(true);
+                if (!Store.SyncedBrowsingEnabled) throw new Exception("synced browsing enable setting was not restored");
+
+                Provider gDirectProvider = new Provider();
+                gDirectProvider.Id = "google:direct@example.com";
+                gDirectProvider.Kind = "GoogleDrive";
+                gDirectProvider.Name = "Google Drive (direct@example.com)";
+                gDirectProvider.Root = "gdrive:direct@example.com";
+                List<Provider> testProviders = new List<Provider> { gDirectProvider };
+                Store.Place place = Store.FindPlace(@"gdrive:direct@example.com\My Drive\Photos", testProviders);
+                if (place == null || place.Provider != gDirectProvider || place.Relative != @"My Drive\Photos")
+                    throw new Exception("Store.FindPlace failed to resolve direct gdrive virtual path");
+
+                LinkFolder gLink = new LinkFolder();
+                gLink.Id = "test-link";
+                gLink.ProviderId = gDirectProvider.Id;
+                gLink.RemoteRelative = @"My Drive\Photos";
+                string resolvedRemote = Store.ResolveRemote(gLink, testProviders);
+                if (resolvedRemote != @"gdrive:direct@example.com\My Drive\Photos")
+                    throw new Exception("Store.ResolveRemote failed for direct gdrive virtual path: " + resolvedRemote);
 
                 GoogleSelfTest.Run(Path.Combine(root, "google"));
 

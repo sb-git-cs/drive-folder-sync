@@ -15,6 +15,7 @@ namespace DriveFolderSync
 
         // Every file under the root. Links and shortcuts are added to links and not followed.
         Dictionary<string, FileRecord> List(List<string> links);
+        Dictionary<string, FileRecord> List(List<string> links, SyncProgress progress);
 
         // Only the listed relative paths that exist.
         Dictionary<string, FileRecord> ListAllowed(List<string> rels);
@@ -23,6 +24,7 @@ namespace DriveFolderSync
         List<string> Directories(Dictionary<string, bool> links);
 
         void EnsureDirectories(List<string> rels);
+        void EnsureDirectories(List<string> rels, SyncProgress progress);
 
         FileRecord Upload(string rel, FileRecord local, SyncProgress progress);
 
@@ -61,7 +63,12 @@ namespace DriveFolderSync
 
         public Dictionary<string, FileRecord> List(List<string> links)
         {
-            return SyncEngine.Index(SyncEngine.ListFiles(root, links));
+            return List(links, null);
+        }
+
+        public Dictionary<string, FileRecord> List(List<string> links, SyncProgress progress)
+        {
+            return SyncEngine.Index(SyncEngine.ListFiles(root, links, progress, "Scanning cloud files"));
         }
 
         public Dictionary<string, FileRecord> ListAllowed(List<string> rels)
@@ -76,7 +83,29 @@ namespace DriveFolderSync
 
         public void EnsureDirectories(List<string> rels)
         {
-            foreach (string rel in rels) Directory.CreateDirectory(SyncEngine.LongPath(Path.Combine(root, rel)));
+            EnsureDirectories(rels, null);
+        }
+
+        public void EnsureDirectories(List<string> rels, SyncProgress progress)
+        {
+            if (rels == null) return;
+            int total = rels.Count;
+            DateTime start = DateTime.UtcNow;
+            for (int i = 0; i < total; i++)
+            {
+                if (progress != null)
+                {
+                    if (progress.Canceled) break;
+                    double etaSec = 0;
+                    if (i > 0)
+                    {
+                        double elapsedSec = (DateTime.UtcNow - start).TotalSeconds;
+                        etaSec = (elapsedSec / i) * (total - i);
+                    }
+                    progress.SetCheckStatus("Preparing cloud folders (" + (i + 1) + " of " + total + ")", etaSec > 0 ? (double?)etaSec : null, i + 1, total);
+                }
+                Directory.CreateDirectory(SyncEngine.LongPath(Path.Combine(root, rels[i])));
+            }
         }
 
         public FileRecord Upload(string rel, FileRecord local, SyncProgress progress)

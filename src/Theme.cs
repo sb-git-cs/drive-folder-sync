@@ -444,7 +444,10 @@ namespace DriveFolderSync
         {
             bool hot = item.Selected || item.Pressed;
             if (!item.Enabled || (!hot && !on)) return;
-            Theme.FillRound(g, item.Pressed ? Theme.Pressed : Theme.Hover, new Rectangle(0, 0, item.Width, item.Height), Theme.S(4));
+            Rectangle r = new Rectangle(0, 0, item.Width, item.Height);
+            Color fill = item.Pressed ? Theme.Pressed : (on ? (hot ? Theme.Pressed : Theme.RowSelected) : Theme.Hover);
+            Theme.FillRound(g, fill, r, Theme.S(4));
+            if (on) Theme.DrawRound(g, Theme.BorderStrong, r, Theme.S(4), 1f);
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)

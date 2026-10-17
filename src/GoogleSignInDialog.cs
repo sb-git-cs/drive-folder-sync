@@ -23,6 +23,21 @@ namespace DriveFolderSync
         {
             Theme.Init();
             foreach (Provider provider in providers) if (GoogleAuth.EmailOf(provider) != null) drives.Add(provider);
+            foreach (string email in GoogleAuth.GetAccounts())
+            {
+                bool found = false;
+                foreach (Provider p in drives) if (string.Equals(GoogleAuth.EmailOf(p), email, StringComparison.OrdinalIgnoreCase)) found = true;
+                if (!found)
+                {
+                    Provider p = new Provider();
+                    p.Id = "google:" + email.ToLowerInvariant();
+                    p.Kind = "GoogleDrive";
+                    p.Name = "Google Drive";
+                    p.Root = "gdrive:" + email.ToLowerInvariant();
+                    p.Detail = email;
+                    drives.Add(p);
+                }
+            }
             Text = "Google Drive sign-in";
             Icon = Theme.AppIcon;
             ShowIcon = false;
@@ -81,19 +96,59 @@ namespace DriveFolderSync
             {
                 using (Pen pen = new Pen(Theme.Border)) e.Graphics.DrawLine(pen, 0, 0, footer.Width, 0);
             });
+            FlatButton addAccount = new FlatButton("+ Add Google Account…", false);
+            addAccount.Location = new Point(pad, (footer.Height - addAccount.Height) / 2);
+            addAccount.Click += delegate
+            {
+                if (working) return;
+                SignIn(null);
+            };
+            footer.Controls.Add(addAccount);
             FlatButton done = new FlatButton("Done", true);
             done.Location = new Point(width - pad - done.Width, (footer.Height - done.Height) / 2);
             done.Click += delegate
             {
-                if (working) return;
+                if (working)
+                {
+                    GoogleAuth.CancelSignIn();
+                    working = false;
+                }
                 SaveClient();
                 DialogResult = DialogResult.OK;
+                Close();
             };
             footer.Controls.Add(done);
+
+            FlatButton cancelBtn = new FlatButton("Cancel", false);
+            cancelBtn.Location = new Point(done.Left - Theme.S(8) - cancelBtn.Width, (footer.Height - cancelBtn.Height) / 2);
+            cancelBtn.Click += delegate
+            {
+                if (working)
+                {
+                    GoogleAuth.CancelSignIn();
+                    working = false;
+                    status.ForeColor = Theme.TextMuted;
+                    status.Text = "Google sign-in was canceled.";
+                    ShowAccounts();
+                    return;
+                }
+                DialogResult = DialogResult.Cancel;
+                Close();
+            };
+            footer.Controls.Add(cancelBtn);
+
             Controls.Add(footer);
             AcceptButton = done;
+            CancelButton = cancelBtn;
             ClientSize = new Size(width, y + footer.Height);
-            FormClosing += delegate(object sender, FormClosingEventArgs e) { if (working) e.Cancel = true; };
+            FormClosing += delegate(object sender, FormClosingEventArgs e)
+            {
+                if (working)
+                {
+                    working = false;
+                    GoogleAuth.CancelSignIn();
+                }
+            };
             ShowAccounts();
         }
 
@@ -133,7 +188,7 @@ namespace DriveFolderSync
             if (drives.Count == 0)
             {
                 Label none = new Label();
-                none.Text = "No Google Drive accounts were found. Sign in to Google Drive for desktop first so its drives appear here.";
+                none.Text = "No Google Drive accounts connected yet. Enter your client ID and secret above, then click + Add Google Account… below to sign in.";
                 none.Font = Theme.Body;
                 none.ForeColor = Theme.TextMuted;
                 none.SetBounds(0, 0, field, accounts.Height);
@@ -183,24 +238,33 @@ namespace DriveFolderSync
             working = true;
             ShowAccounts();
             status.ForeColor = Theme.TextMuted;
-            status.Text = "Finish signing in as " + email + " in your browser…";
+            status.Text = string.IsNullOrEmpty(email) ? "Opening browser to sign in to Google Drive… Click Cancel to abort." : "Finish signing in as " + email + " in your browser… Click Cancel to abort.";
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string result = null;
                 string error = null;
+                bool canceled = false;
                 try { result = GoogleAuth.SignIn(email, 300); }
+                catch (OperationCanceledException) { canceled = true; }
                 catch (Exception ex) { error = ex.Message; }
                 try
                 {
+                    if (IsDisposed) return;
                     BeginInvoke(new Action(delegate
                     {
+                        if (IsDisposed) return;
                         working = false;
-                        if (error != null)
+                        if (canceled)
+                        {
+                            status.ForeColor = Theme.TextMuted;
+                            status.Text = "Google sign-in was canceled.";
+                        }
+                        else if (error != null)
                         {
                             status.ForeColor = Theme.CloudText;
                             status.Text = error;
                         }
-                        else if (!string.Equals(result, email, StringComparison.OrdinalIgnoreCase))
+                        else if (!string.IsNullOrEmpty(email) && !string.Equals(result, email, StringComparison.OrdinalIgnoreCase))
                         {
                             status.ForeColor = Theme.CloudText;
                             status.Text = "You signed in as " + result + ". Sign in again and choose " + email + " in the browser.";
@@ -208,13 +272,26 @@ namespace DriveFolderSync
                         else
                         {
                             status.ForeColor = Theme.TextMuted;
-                            status.Text = "Connected " + email + ". Backups for this drive now upload directly.";
+                            status.Text = "Connected " + result + ". Google Drive is ready to upload and sync.";
+                            bool exists = false;
+                            foreach (Provider p in drives) if (string.Equals(GoogleAuth.EmailOf(p), result, StringComparison.OrdinalIgnoreCase)) exists = true;
+                            if (!exists)
+                            {
+                                Provider p = new Provider();
+                                p.Id = "google:" + result.ToLowerInvariant();
+                                p.Kind = "GoogleDrive";
+                                p.Name = "Google Drive";
+                                p.Root = "gdrive:" + result.ToLowerInvariant();
+                                p.Detail = result;
+                                drives.Add(p);
+                                accounts.Height = Math.Max(1, drives.Count) * Theme.S(44);
+                            }
                         }
                         ShowAccounts();
-                        Activate();
+                        try { Activate(); } catch { }
                     }));
                 }
-                catch (InvalidOperationException) { }
+                catch (Exception) { }
             });
         }
     }

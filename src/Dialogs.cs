@@ -38,6 +38,51 @@ namespace DriveFolderSync
             return Show(owner, heading, body, details, action, "Cancel", kind) == DialogResult.OK;
         }
 
+        public static string Prompt(IWin32Window owner, string title, string prompt, string defaultValue)
+        {
+            using (Form form = new Form())
+            {
+                form.Text = title;
+                form.FormBorderStyle = FormBorderStyle.FixedDialog;
+                form.MaximizeBox = false;
+                form.MinimizeBox = false;
+                form.StartPosition = FormStartPosition.CenterParent;
+                form.ClientSize = new Size(Theme.S(400), Theme.S(150));
+                form.BackColor = Theme.Window;
+                form.Font = Theme.Body;
+
+                Label lbl = new Label();
+                lbl.Text = prompt;
+                lbl.SetBounds(Theme.S(16), Theme.S(16), Theme.S(368), Theme.S(24));
+                lbl.Font = Theme.Body;
+                lbl.ForeColor = Theme.Text;
+
+                TextBox box = new TextBox();
+                box.Text = defaultValue ?? "";
+                box.SetBounds(Theme.S(16), Theme.S(44), Theme.S(368), Theme.S(26));
+                box.Font = Theme.Body;
+
+                FlatButton ok = new FlatButton("OK", true);
+                ok.Location = new Point(Theme.S(216), Theme.S(90));
+                ok.DialogResult = DialogResult.OK;
+
+                FlatButton cancel = new FlatButton("Cancel", false);
+                cancel.Location = new Point(Theme.S(304), Theme.S(90));
+                cancel.DialogResult = DialogResult.Cancel;
+
+                form.Controls.Add(lbl);
+                form.Controls.Add(box);
+                form.Controls.Add(ok);
+                form.Controls.Add(cancel);
+                form.AcceptButton = ok;
+                form.CancelButton = cancel;
+
+                if (form.ShowDialog(owner) == DialogResult.OK)
+                    return box.Text.Trim();
+                return null;
+            }
+        }
+
         static DialogResult Show(IWin32Window owner, string heading, string body, IList<string> details, string primary, string secondary, MessageKind kind)
         {
             using (MessageDialog dialog = new MessageDialog(heading, body, details, primary, secondary, kind))

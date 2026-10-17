@@ -6,8 +6,8 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Drive Folder Sync")]
 [assembly: AssemblyProduct("Drive Folder Sync")]
-[assembly: AssemblyVersion("1.6.0.0")]
-[assembly: AssemblyFileVersion("1.6.0.0")]
+[assembly: AssemblyVersion("1.7.0.0")]
+[assembly: AssemblyFileVersion("1.7.0.0")]
 
 namespace DriveFolderSync
 {
@@ -69,6 +69,15 @@ namespace DriveFolderSync
 
         static void RunUi(string linkPath)
         {
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
+            {
+                try { Store.Log("UI ThreadException: " + e.Exception); } catch { }
+            };
+            AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e)
+            {
+                try { Store.Log("AppDomain UnhandledException: " + e.ExceptionObject); } catch { }
+            };
             bool created;
             using (Mutex mutex = new Mutex(true, @"Local\DriveFolderSyncUi", out created))
             {

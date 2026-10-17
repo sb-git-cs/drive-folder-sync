@@ -10,6 +10,7 @@ namespace DriveFolderSync
     {
         readonly object gate = new object();
         readonly Queue<KeyValuePair<DateTime, long>> samples = new Queue<KeyValuePair<DateTime, long>>();
+        readonly Dictionary<string, long> activeTransfers = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         string direction = "";
         string folder = "";
         string current = "";
@@ -22,6 +23,11 @@ namespace DriveFolderSync
         long fileBase;
         long moved;
         long movedBase;
+        DateTime startedUtc = DateTime.UtcNow;
+        string checkStatus = "";
+        double checkEtaSeconds = 0;
+        int checkCurrent = -1;
+        int checkTotal = -1;
         bool planned;
         volatile bool canceled;
 
@@ -37,6 +43,44 @@ namespace DriveFolderSync
         public string CurrentFile { get { lock (gate) return current; } }
         public string Folder { get { lock (gate) return folder; } }
         public bool Canceled { get { return canceled; } }
+        public DateTime StartedUtc { get { lock (gate) return startedUtc; } }
+        public string CheckStatus { get { lock (gate) return checkStatus; } }
+        public double CheckEtaSeconds { get { lock (gate) return checkEtaSeconds; } }
+        public int CheckCurrent { get { lock (gate) return checkCurrent; } }
+        public int CheckTotal { get { lock (gate) return checkTotal; } }
+
+        public int CheckPercent
+        {
+            get
+            {
+                lock (gate)
+                {
+                    if (checkTotal <= 0 || checkCurrent < 0) return -1;
+                    return (int)Math.Min(100, Math.Max(0, 100L * checkCurrent / checkTotal));
+                }
+            }
+        }
+
+        public void SetCheckStatus(string status)
+        {
+            SetCheckStatus(status, null, -1, -1);
+        }
+
+        public void SetCheckStatus(string status, double? etaSeconds)
+        {
+            SetCheckStatus(status, etaSeconds, -1, -1);
+        }
+
+        public void SetCheckStatus(string status, double? etaSeconds, int currentItem, int totalItems)
+        {
+            lock (gate)
+            {
+                checkStatus = status ?? "";
+                checkEtaSeconds = etaSeconds.HasValue && etaSeconds.Value > 0 ? etaSeconds.Value : 0;
+                checkCurrent = currentItem;
+                checkTotal = totalItems;
+            }
+        }
 
         // Stops after the current file; files already copied stay copied.
         public void Cancel()
@@ -72,6 +116,13 @@ namespace DriveFolderSync
                 fileBase = 0;
                 current = "";
                 planned = false;
+                checkStatus = "";
+                checkEtaSeconds = 0;
+                checkCurrent = -1;
+                checkTotal = -1;
+                startedUtc = DateTime.UtcNow;
+                samples.Clear();
+                activeTransfers.Clear();
             }
         }
 
@@ -88,15 +139,32 @@ namespace DriveFolderSync
 
         internal void BeginFile(string rel)
         {
-            lock (gate) current = rel ?? "";
+            lock (gate)
+            {
+                string key = rel ?? "";
+                activeTransfers[key] = 0;
+                current = key;
+            }
         }
 
         internal void Copied(long transferred)
         {
             lock (gate)
             {
-                doneBytes = fileBase + transferred;
-                moved = movedBase + transferred;
+                Copied(current, transferred);
+            }
+        }
+
+        internal void Copied(string rel, long transferred)
+        {
+            lock (gate)
+            {
+                string key = string.IsNullOrEmpty(rel) ? (current ?? "") : rel;
+                activeTransfers[key] = transferred;
+                long inFlight = 0;
+                foreach (long val in activeTransfers.Values) inFlight += val;
+                doneBytes = fileBase + inFlight;
+                moved = movedBase + inFlight;
                 Sample(DateTime.UtcNow);
             }
         }
@@ -105,13 +173,28 @@ namespace DriveFolderSync
         {
             lock (gate)
             {
-                // A failed copy still counts as handled so the remaining amount stays accurate.
+                EndFile(current, bytes, copied);
+            }
+        }
+
+        internal void EndFile(string rel, long bytes, bool copied)
+        {
+            lock (gate)
+            {
+                string key = string.IsNullOrEmpty(rel) ? (current ?? "") : rel;
+                activeTransfers.Remove(key);
                 fileBase += bytes;
-                doneBytes = fileBase;
                 if (copied) movedBase += bytes;
-                moved = movedBase;
+                long inFlight = 0;
+                foreach (long val in activeTransfers.Values) inFlight += val;
+                doneBytes = fileBase + inFlight;
+                moved = movedBase + inFlight;
                 doneFiles++;
-                current = "";
+                if (current == key)
+                {
+                    current = "";
+                    foreach (string active in activeTransfers.Keys) { current = active; break; }
+                }
                 Sample(DateTime.UtcNow);
             }
         }
@@ -141,9 +224,25 @@ namespace DriveFolderSync
                 if (samples.Count == 0) return 0;
                 KeyValuePair<DateTime, long> first = samples.Peek();
                 double seconds = (now - first.Key).TotalSeconds;
-                if (seconds < 1) return 0;
+                if (seconds < 1)
+                {
+                    double totalSec = (now - startedUtc).TotalSeconds;
+                    if (totalSec >= 1 && moved > 0) return moved / totalSec;
+                    return 0;
+                }
                 return Math.Max(0, moved - first.Value) / seconds;
             }
+        }
+
+        public static string FormatElapsed(TimeSpan duration)
+        {
+            if (duration < TimeSpan.Zero) duration = TimeSpan.Zero;
+            int hours = (int)duration.TotalHours;
+            int minutes = duration.Minutes;
+            int seconds = duration.Seconds;
+            if (hours > 0)
+                return string.Format(CultureInfo.InvariantCulture, "{0}:{1:D2}:{2:D2}", hours, minutes, seconds);
+            return string.Format(CultureInfo.InvariantCulture, "{0}:{1:D2}", minutes, seconds);
         }
 
         public string Describe()
@@ -162,14 +261,27 @@ namespace DriveFolderSync
                 if (folderCount > 1) name += " (" + folderIndex + " of " + folderCount + ")";
                 string verb = direction == "Pull" ? "Refreshing" : "Backing up";
                 if (canceled) return "Stopping after the current file…";
-                if (!planned) return "Checking " + name + "…";
-                if (totalFiles == 0) return verb + " " + name + "  ·  nothing to copy";
+
+                string elapsed = FormatElapsed(now - startedUtc) + " elapsed";
+                if (!planned)
+                {
+                    List<string> checkParts = new List<string>();
+                    string title = "Checking " + name;
+                    if (!string.IsNullOrEmpty(checkStatus)) title += " (" + checkStatus + ")";
+                    checkParts.Add(title);
+                    if (checkEtaSeconds > 0) checkParts.Add("ETA " + TimeLeft(checkEtaSeconds));
+                    checkParts.Add(elapsed);
+                    return string.Join("  ·  ", checkParts.ToArray());
+                }
+
+                if (totalFiles == 0) return verb + " " + name + "  ·  nothing to copy  ·  " + elapsed;
                 List<string> parts = new List<string>();
                 parts.Add(verb + " " + name);
                 parts.Add(SyncEngine.FormatSize(doneBytes) + " of " + SyncEngine.FormatSize(totalBytes));
                 if (speed > 0) parts.Add(SyncEngine.FormatSize((long)speed) + "/s");
                 long remaining = Math.Max(0, totalBytes - doneBytes);
-                if (speed > 0 && remaining > 0) parts.Add(TimeLeft(remaining / speed));
+                if (speed > 0 && remaining > 0) parts.Add("ETA " + TimeLeft(remaining / speed));
+                parts.Add(elapsed);
                 parts.Add("file " + Math.Min(totalFiles, doneFiles + 1) + " of " + totalFiles);
                 return string.Join("  ·  ", parts.ToArray());
             }
@@ -182,10 +294,22 @@ namespace DriveFolderSync
             lock (gate)
             {
                 string verb = direction == "Pull" ? "Refreshing" : "Backing up";
-                if (!planned) return verb + "\u2026";
-                string text = verb + " " + Percent + "%";
+                string elapsed = FormatElapsed(DateTime.UtcNow - startedUtc);
+                if (!planned)
+                {
+                    if (checkEtaSeconds > 0)
+                        return verb + " \u00b7 ETA " + TimeLeft(checkEtaSeconds) + " \u00b7 " + elapsed;
+                    return verb + "\u2026 \u00b7 " + elapsed;
+                }
                 long remaining = Math.Max(0, totalBytes - doneBytes);
-                if (speed > 0 && remaining > 0) text += " \u00b7 " + TimeLeft(remaining / speed);
+                string eta = (speed > 0 && remaining > 0) ? "ETA " + TimeLeft(remaining / speed) : null;
+                string text = verb + " " + Percent + "%";
+                if (eta != null) text += " \u00b7 " + eta;
+                text += " \u00b7 " + elapsed;
+                if (text.Length > 44 && eta != null)
+                {
+                    text = verb + " " + Percent + "% \u00b7 " + TimeLeft(remaining / speed) + " \u00b7 " + elapsed;
+                }
                 return text;
             }
         }

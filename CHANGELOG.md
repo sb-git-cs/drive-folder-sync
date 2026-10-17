@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.0
+
+High-speed direct Google Drive integration, dual-pane independent browsing, responsive checking experience, and live ETA tracking.
+
+- **Dual-Pane Independent & Synced Browsing.** Browse local PC files and Google Drive cloud folders side-by-side or independently. Added a convenient **Synced browsing** toggle directly on the main screen to synchronize navigation between local folders and their cloud counterparts.
+- **Lock-Free Asynchronous Navigation.** Folder navigation is completely non-blocking, eliminating UI hangs when switching folders or toggling synced browsing. State access and UI threads are isolated from long-running background mutexes.
+- **High-Speed Direct Transfers.** Achieved near-native transfer speeds utilizing connection pooling (up to 64 concurrent sockets), 16 MB chunking, batch operations, and parallel worker threads for multi-file transfers.
+- **Live Scanning Feedback & Real Item Counts.** Folder checking now provides continuous live updates. Local scans report live file and folder counts (`Scanning local files (X files, Y folders found)…`) rather than appearing frozen. Cloud directory discovery dynamically displays total items found.
+- **Smooth Progress Bar & Live ETA during Checking.** The progress bar actively tracks percentage and time remaining during folder creation (`Preparing cloud folders (X of Y)`) and file comparisons (`Comparing files (X of Y)…`) before transfers begin.
+- **Clear UI Status Feedback.** Dedicated status labels and pane headers show active operations (`Checking local files…`, `Checking Google Drive…`) so the user always knows what the engine is doing.
+- **Robust OAuth Sign-In Lifecycle.** Google OAuth authentication is streamlined with automated loopback listener handling, clean window closure, and support for custom OAuth client credentials.
+
 ## 1.6.0
 
 Google Drive backups now upload directly, and syncs show their progress.

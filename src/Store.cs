@@ -18,7 +18,12 @@ namespace DriveFolderSync
 
         public bool IsOnline
         {
-            get { return !string.IsNullOrEmpty(Root) && Directory.Exists(Root); }
+            get
+            {
+                if (Kind == "GoogleDrive" && (string.IsNullOrEmpty(Root) || Root.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase)))
+                    return GoogleAuth.IsSignedIn(GoogleAuth.EmailOf(this));
+                return !string.IsNullOrEmpty(Root) && Directory.Exists(Root);
+            }
         }
 
         public string Title
@@ -83,7 +88,7 @@ namespace DriveFolderSync
 
     public class Store
     {
-        public const string Version = "1.6.0";
+        public const string Version = "1.7.0";
         static readonly object LogGate = new object();
         static string rootOverride;
         static string logOverride;
@@ -206,6 +211,30 @@ namespace DriveFolderSync
             if (string.IsNullOrEmpty(path) || providers == null) return null;
             Place linked = FindLinkedPlace(path, providers, ReadLinks());
             if (linked != null) return linked;
+            if (path.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (Provider provider in providers)
+                {
+                    if (provider != null && !string.IsNullOrEmpty(provider.Root) && IsUnder(path, provider.Root))
+                        return MakePlace(provider, Relative(path, provider.Root) ?? "", false);
+                }
+                int colon = path.IndexOf(':');
+                string rest = path.Substring(colon + 1);
+                int slash = rest.IndexOf('\\');
+                string email = slash < 0 ? rest : rest.Substring(0, slash);
+                string rel = slash < 0 ? "" : rest.Substring(slash + 1);
+                Provider p = FindProvider(providers, "google:" + email);
+                if (p == null)
+                {
+                    p = new Provider();
+                    p.Id = "google:" + email.ToLowerInvariant();
+                    p.Kind = "GoogleDrive";
+                    p.Name = "Google Drive";
+                    p.Root = "gdrive:" + email.ToLowerInvariant();
+                    p.Detail = email;
+                }
+                return MakePlace(p, rel, false);
+            }
             foreach (Provider provider in providers)
             {
                 if (provider == null || string.IsNullOrEmpty(provider.Root)) continue;
@@ -293,47 +322,58 @@ namespace DriveFolderSync
             return list;
         }
 
+        public static readonly object ConfigGate = new object();
+
         public static Dictionary<string, object> ReadConfig()
         {
-            Dictionary<string, object> cfg = ReadObject(ConfigPath);
-            if (cfg == null) cfg = new Dictionary<string, object>();
-            return cfg;
+            lock (ConfigGate)
+            {
+                Dictionary<string, object> cfg = ReadObject(ConfigPath);
+                if (cfg == null) cfg = new Dictionary<string, object>();
+                return cfg;
+            }
         }
 
         public static void SaveCustomProvider(Provider provider)
         {
-            Dictionary<string, object> cfg = ReadConfig();
-            if (!cfg.ContainsKey("localRoot") || string.IsNullOrEmpty(GetString(cfg, "localRoot")))
-                cfg["localRoot"] = LocalRoot();
-            List<Dictionary<string, object>> custom = GetObjectList(cfg, "customProviders");
-            bool found = false;
-            for (int i = 0; i < custom.Count; i++)
+            lock (ConfigGate)
             {
-                if (string.Equals(GetString(custom[i], "id"), provider.Id, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(Norm(GetString(custom[i], "root")), Norm(provider.Root), StringComparison.OrdinalIgnoreCase))
+                Dictionary<string, object> cfg = ReadConfig();
+                if (!cfg.ContainsKey("localRoot") || string.IsNullOrEmpty(GetString(cfg, "localRoot")))
+                    cfg["localRoot"] = LocalRoot();
+                List<Dictionary<string, object>> custom = GetObjectList(cfg, "customProviders");
+                bool found = false;
+                for (int i = 0; i < custom.Count; i++)
                 {
-                    custom[i] = ProviderToMap(provider);
-                    found = true;
-                    break;
+                    if (string.Equals(GetString(custom[i], "id"), provider.Id, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(Norm(GetString(custom[i], "root")), Norm(provider.Root), StringComparison.OrdinalIgnoreCase))
+                    {
+                        custom[i] = ProviderToMap(provider);
+                        found = true;
+                        break;
+                    }
                 }
+                if (!found) custom.Add(ProviderToMap(provider));
+                cfg["customProviders"] = custom;
+                WriteObject(ConfigPath, cfg);
             }
-            if (!found) custom.Add(ProviderToMap(provider));
-            cfg["customProviders"] = custom;
-            WriteObject(ConfigPath, cfg);
         }
 
         public static void RemoveCustomProvider(string id)
         {
-            Dictionary<string, object> cfg = ReadConfig();
-            List<Dictionary<string, object>> custom = GetObjectList(cfg, "customProviders");
-            List<Dictionary<string, object>> keep = new List<Dictionary<string, object>>();
-            foreach (Dictionary<string, object> item in custom)
+            lock (ConfigGate)
             {
-                if (!string.Equals(GetString(item, "id"), id, StringComparison.OrdinalIgnoreCase))
-                    keep.Add(item);
+                Dictionary<string, object> cfg = ReadConfig();
+                List<Dictionary<string, object>> custom = GetObjectList(cfg, "customProviders");
+                List<Dictionary<string, object>> keep = new List<Dictionary<string, object>>();
+                foreach (Dictionary<string, object> item in custom)
+                {
+                    if (!string.Equals(GetString(item, "id"), id, StringComparison.OrdinalIgnoreCase))
+                        keep.Add(item);
+                }
+                cfg["customProviders"] = keep;
+                WriteObject(ConfigPath, cfg);
             }
-            cfg["customProviders"] = keep;
-            WriteObject(ConfigPath, cfg);
         }
 
         public static bool BackupOnStartupEnabled
@@ -347,10 +387,40 @@ namespace DriveFolderSync
 
         public static void SetBackupOnStartup(bool enabled)
         {
-            using (SyncEngine.LockState(120))
+            lock (ConfigGate)
             {
                 Dictionary<string, object> config = ReadConfig();
                 config["backupOnStartup"] = enabled;
+                WriteObject(ConfigPath, config);
+            }
+        }
+
+        public static bool SyncedBrowsingEnabled
+        {
+            get
+            {
+                Dictionary<string, object> config = ReadConfig();
+                return !config.ContainsKey("syncedBrowsing") || GetBool(config, "syncedBrowsing");
+            }
+        }
+
+        public static void SetSyncedBrowsing(bool enabled)
+        {
+            lock (ConfigGate)
+            {
+                Dictionary<string, object> config = ReadConfig();
+                config["syncedBrowsing"] = enabled;
+                WriteObject(ConfigPath, config);
+            }
+        }
+
+        public static void SetGoogleClient(string id, string secret)
+        {
+            lock (ConfigGate)
+            {
+                Dictionary<string, object> config = ReadConfig();
+                config["googleClientId"] = (id ?? "").Trim();
+                config["googleClientSecret"] = (secret ?? "").Trim();
                 WriteObject(ConfigPath, config);
             }
         }
@@ -454,7 +524,7 @@ namespace DriveFolderSync
         {
             DriveInfo[] drives;
             try { drives = DriveInfo.GetDrives(); }
-            catch { return; }
+            catch { drives = new DriveInfo[0]; }
             foreach (DriveInfo drive in drives)
             {
                 string label = "";
@@ -478,6 +548,22 @@ namespace DriveFolderSync
                 provider.Root = root;
                 provider.Detail = detail + " (" + drive.Name.TrimEnd('\\') + ")";
                 if (!ContainsRoot(list, root)) list.Add(provider);
+            }
+
+            foreach (string email in GoogleAuth.GetAccounts())
+            {
+                if (string.IsNullOrEmpty(email)) continue;
+                string id = "google:" + email.ToLowerInvariant();
+                if (FindProvider(list, id) == null)
+                {
+                    Provider provider = new Provider();
+                    provider.Id = id;
+                    provider.Kind = "GoogleDrive";
+                    provider.Name = "Google Drive";
+                    provider.Root = "gdrive:" + email.ToLowerInvariant();
+                    provider.Detail = email;
+                    list.Add(provider);
+                }
             }
         }
 
@@ -609,58 +695,71 @@ namespace DriveFolderSync
             Provider provider = FindProvider(providers, folder.ProviderId);
             if (provider == null || string.IsNullOrEmpty(provider.Root)) return null;
             if (string.IsNullOrEmpty(folder.RemoteRelative)) return provider.Root;
+            if (provider.Root.StartsWith("gdrive:", StringComparison.OrdinalIgnoreCase))
+            {
+                string gRemote = provider.Root.TrimEnd('\\') + "\\" + folder.RemoteRelative.Trim('\\');
+                return IsUnder(gRemote, provider.Root) ? gRemote : null;
+            }
             string remote = Path.GetFullPath(Path.Combine(provider.Root, folder.RemoteRelative));
             return IsUnder(remote, provider.Root) ? remote : null;
         }
 
+        public static readonly object LinksGate = new object();
+
         public static List<LinkFolder> ReadLinks()
         {
-            EnsureDirs();
-            MigrateLegacy();
-            List<LinkFolder> list = new List<LinkFolder>();
-            Dictionary<string, object> root = ReadObject(ManifestPath);
-            if (root == null) return list;
-            foreach (Dictionary<string, object> item in GetObjectList(root, "folders"))
+            lock (LinksGate)
             {
-                LinkFolder folder = new LinkFolder();
-                folder.Id = GetString(item, "id");
-                folder.Local = GetString(item, "local");
-                folder.ProviderId = GetString(item, "providerId");
-                folder.RemoteRelative = GetString(item, "remoteRelative");
-                folder.Added = GetString(item, "added");
-                folder.LastSync = GetString(item, "lastSync");
-                folder.LastErrors = GetInt(item, "lastErrors");
-                folder.Partial = GetBool(item, "partial");
-                folder.Files = GetStringList(item, "files");
-                folder.Dirs = GetStringList(item, "dirs");
-                if (string.IsNullOrEmpty(folder.Id) || string.IsNullOrEmpty(folder.Local)) continue;
-                list.Add(folder);
+                EnsureDirs();
+                MigrateLegacy();
+                List<LinkFolder> list = new List<LinkFolder>();
+                Dictionary<string, object> root = ReadObject(ManifestPath);
+                if (root == null) return list;
+                foreach (Dictionary<string, object> item in GetObjectList(root, "folders"))
+                {
+                    LinkFolder folder = new LinkFolder();
+                    folder.Id = GetString(item, "id");
+                    folder.Local = GetString(item, "local");
+                    folder.ProviderId = GetString(item, "providerId");
+                    folder.RemoteRelative = GetString(item, "remoteRelative");
+                    folder.Added = GetString(item, "added");
+                    folder.LastSync = GetString(item, "lastSync");
+                    folder.LastErrors = GetInt(item, "lastErrors");
+                    folder.Partial = GetBool(item, "partial");
+                    folder.Files = GetStringList(item, "files");
+                    folder.Dirs = GetStringList(item, "dirs");
+                    if (string.IsNullOrEmpty(folder.Id) || string.IsNullOrEmpty(folder.Local)) continue;
+                    list.Add(folder);
+                }
+                return list;
             }
-            return list;
         }
 
         public static void SaveLinks(List<LinkFolder> links)
         {
-            EnsureDirs();
-            List<Dictionary<string, object>> folders = new List<Dictionary<string, object>>();
-            foreach (LinkFolder folder in links)
+            lock (LinksGate)
             {
-                Dictionary<string, object> item = new Dictionary<string, object>();
-                item["id"] = folder.Id;
-                item["local"] = folder.Local;
-                item["providerId"] = folder.ProviderId ?? "";
-                item["remoteRelative"] = folder.RemoteRelative ?? "";
-                item["added"] = folder.Added ?? "";
-                item["lastSync"] = folder.LastSync ?? "";
-                item["lastErrors"] = folder.LastErrors;
-                item["partial"] = folder.Partial;
-                item["files"] = folder.Files ?? new List<string>();
-                item["dirs"] = folder.Dirs ?? new List<string>();
-                folders.Add(item);
+                EnsureDirs();
+                List<Dictionary<string, object>> folders = new List<Dictionary<string, object>>();
+                foreach (LinkFolder folder in links)
+                {
+                    Dictionary<string, object> item = new Dictionary<string, object>();
+                    item["id"] = folder.Id;
+                    item["local"] = folder.Local;
+                    item["providerId"] = folder.ProviderId ?? "";
+                    item["remoteRelative"] = folder.RemoteRelative ?? "";
+                    item["added"] = folder.Added ?? "";
+                    item["lastSync"] = folder.LastSync ?? "";
+                    item["lastErrors"] = folder.LastErrors;
+                    item["partial"] = folder.Partial;
+                    item["files"] = folder.Files ?? new List<string>();
+                    item["dirs"] = folder.Dirs ?? new List<string>();
+                    folders.Add(item);
+                }
+                Dictionary<string, object> root = new Dictionary<string, object>();
+                root["folders"] = folders;
+                WriteObject(ManifestPath, root);
             }
-            Dictionary<string, object> root = new Dictionary<string, object>();
-            root["folders"] = folders;
-            WriteObject(ManifestPath, root);
         }
 
         public static string StatePath(string id)
